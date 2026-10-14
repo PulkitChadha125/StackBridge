@@ -1,6 +1,7 @@
-"""API token hashing and broker password encryption."""
+"""API tokens, web UI password and sessions, and broker password encryption."""
 
 import hashlib
+import hmac
 import os
 import secrets
 from pathlib import Path
@@ -14,6 +15,31 @@ def new_api_token() -> str:
 
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def new_session_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+# Web UI password. scrypt is deliberately slow, so a stolen database cannot be brute-forced quickly.
+_SCRYPT = {"n": 2**14, "r": 8, "p": 1, "dklen": 32}
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.scrypt(password.encode("utf-8"), salt=salt, **_SCRYPT)
+    return f"scrypt${salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        scheme, salt_hex, digest_hex = stored.split("$")
+    except ValueError:
+        return False
+    if scheme != "scrypt":
+        return False
+    digest = hashlib.scrypt(password.encode("utf-8"), salt=bytes.fromhex(salt_hex), **_SCRYPT)
+    return hmac.compare_digest(digest.hex(), digest_hex)
 
 
 class PasswordCipher:

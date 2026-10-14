@@ -9,27 +9,44 @@
 <body>
   <header>
     <span class="brand">StakBridge</span>
-    <nav id="tabs">
+    <nav id="tabs" hidden>
       <button data-tab="accounts" class="active">Accounts</button>
       <button data-tab="strategies">Strategies</button>
       <button data-tab="trades">Trades</button>
     </nav>
     <div class="right">
       <span id="kill-banner" hidden>Trading stopped</span>
-      <button id="kill-btn" class="danger">Stop all</button>
-      <button id="logout-btn" class="link" title="Forget the API token in this browser">Sign out</button>
+      <button id="kill-btn" class="danger" hidden>Stop all</button>
+      <button id="logout-btn" class="link" hidden>Sign out</button>
     </div>
   </header>
 
   <main>
-    <section id="login" hidden>
-      <h2>API token</h2>
-      <p>Paste a token created with <code>python -m stakbridge create-token</code>.</p>
+    <section id="login" class="auth-card" hidden>
+      <h2>Sign in</h2>
       <form id="login-form">
-        <input id="token-input" type="password" autocomplete="off" placeholder="sb_..." required>
-        <button type="submit" class="primary">Continue</button>
+        <label>Password <input id="login-password" type="password" autocomplete="current-password" required></label>
+        <button type="submit" class="primary">Sign in</button>
       </form>
       <p id="login-error" class="error"></p>
+      <p class="hint">Forgot it? Run <code>run.bat password</code> on the PC running StakBridge.</p>
+    </section>
+
+    <section id="setup" class="auth-card" hidden>
+      <h2>Create your password</h2>
+      <p class="hint">First start. Choose the password for this page (at least 8 characters).</p>
+      <form id="setup-form">
+        <label>Password <input id="setup-password" type="password" autocomplete="new-password" minlength="8" required></label>
+        <label>Type it again <input id="setup-confirm" type="password" autocomplete="new-password" minlength="8" required></label>
+        <button type="submit" class="primary">Save and sign in</button>
+      </form>
+      <p id="setup-error" class="error"></p>
+    </section>
+
+    <section id="setup-remote" class="auth-card" hidden>
+      <h2>Password not set yet</h2>
+      <p>For safety, the first password can only be created on the PC running StakBridge.
+        Open this page on that PC (address <code>127.0.0.1</code>), or run <code>run.bat password</code> there.</p>
     </section>
 
     <div id="app" hidden>
@@ -37,20 +54,37 @@
       <div id="view"></div>
 
       <details id="add-account" class="panel">
-        <summary>+ Add account</summary>
-        <form id="account-form" class="grid-form">
-          <label>Name <input name="name" required></label>
-          <label>Account id <input name="id" placeholder="optional, e.g. acct_a" pattern="[A-Za-z0-9_\-]{1,40}"></label>
-          <label>MT5 login <input name="login" type="number" min="1" required></label>
+        <summary id="account-form-title">+ Add account</summary>
+        <form id="account-form" class="grid-form" autocomplete="off">
+          <label>Name <input name="name" maxlength="80" required></label>
+          <label>Account id <input name="id" placeholder="optional, e.g. acct_a" pattern="[A-Za-z0-9_\-]{1,40}" title="Letters, digits, _ and - only"></label>
+          <label>MT5 login <input name="login" type="number" min="1" step="1" required></label>
           <label>Password <input name="password" type="password" autocomplete="new-password" required></label>
           <label>Server <input name="server" placeholder="e.g. Broker-Demo" required></label>
-          <label>Symbol suffix <input name="symbolSuffix" placeholder="e.g. .m (empty if none)"></label>
+          <label>Symbol suffix <input name="symbolSuffix" maxlength="16" placeholder="e.g. .m (empty if none)"></label>
           <label class="wide">Terminal path <input name="terminalPath" placeholder="C:\MT5\acct_a\terminal64.exe (one terminal folder per account)"></label>
           <div class="wide actions">
-            <button type="submit" class="primary">Add account</button>
-            <span class="hint">Trading starts OFF. Switch it on once the account shows Connected.</span>
+            <button type="submit" class="primary" id="account-submit">Add account</button>
+            <button type="button" id="account-cancel" hidden>Cancel edit</button>
+            <span class="hint" id="account-hint">Trading starts OFF. Switch it on once the account shows Connected.</span>
           </div>
         </form>
+      </details>
+
+      <details id="send-trade" class="panel" hidden>
+        <summary>Send a trade request</summary>
+        <p class="hint">Sends this JSON to <code>POST /v1/trade</code> exactly as an external signal would. Change <code>requestId</code> for every new trade.</p>
+        <div class="presets">
+          <button type="button" class="small" data-preset="open">Open market</button>
+          <button type="button" class="small" data-preset="limit">Open limit</button>
+          <button type="button" class="small" data-preset="close">Close strategy</button>
+        </div>
+        <textarea id="trade-json" rows="12" spellcheck="false"></textarea>
+        <div class="actions">
+          <button type="button" class="primary" id="trade-send">Send</button>
+          <span class="hint" id="trade-status"></span>
+        </div>
+        <pre id="trade-response" hidden></pre>
       </details>
     </div>
   </main>

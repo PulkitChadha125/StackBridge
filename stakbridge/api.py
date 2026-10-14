@@ -3,9 +3,11 @@
 import logging
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, FastAPI, Header, Request
+from cryptography.fernet import InvalidToken
+from fastapi import APIRouter, Depends, FastAPI, Header, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -13,8 +15,9 @@ from fastapi.staticfiles import StaticFiles
 from . import __version__
 from .config import Settings, load_settings
 from .db import Database
-from .models import AccountIn, AccountPatch, StrategyAccounts, StrategyIn, StrategyPatch, TradeIn
-from .security import PasswordCipher, hash_token
+from .models import (AccountIn, AccountPatch, LoginIn, PasswordSetupIn, StrategyAccounts, StrategyIn,
+                     StrategyPatch, TradeIn)
+from .security import PasswordCipher, hash_password, hash_token, new_session_token, verify_password
 from .trading import ApiError, RateLimiter, TradeService
 from .workers import WorkerGone, WorkerManager
 
@@ -22,6 +25,13 @@ log = logging.getLogger("stakbridge.api")
 STATIC_DIR = Path(__file__).parent / "static"
 # Fields that require the worker to log in again when they change.
 CONNECTION_FIELDS = {"login", "server", "password", "terminal_path", "enabled"}
+
+PASSWORD_KEY = "ui_password"
+SESSION_COOKIE = "stakbridge_session"
+SESSION_LIFETIME = timedelta(days=30)
+UI_HEADER = "X-StakBridge"
+LOGIN_ATTEMPTS_PER_MINUTE = 10
+LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -31,6 +41,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     workers = WorkerManager(settings)
     trades = TradeService(db, workers, settings.trade_timeout)
     limiter = RateLimiter(settings.trade_rate_limit)
+    login_limiter = RateLimiter(LOGIN_ATTEMPTS_PER_MINUTE)
 
     def sync_worker(account: dict) -> None:
         if account["enabled"]:
@@ -42,7 +53,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         workers.start()
         for account in db.list_accounts():
-            sync_worker(account)
+            try:
+                sync_worker(account)
+            except InvalidToken:
+                log.error("cannot decrypt the password of %s (secret key changed?), re-enter it in the UI", account["id"])
         log.info("StakBridge %s started with backend=%s", __version__, settings.backend)
         yield
         workers.stop_all()
@@ -57,19 +71,90 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.exception_handler(RequestValidationError)
     async def bad_payload(_: Request, exc: RequestValidationError):
         # Drop the echoed input so a password in a bad request never comes back in the response.
-        details = [{"field": ".".join(str(p) for p in e["loc"][1:]), "problem": e["msg"]} for e in exc.errors()]
+        details = [{"field": ".".join(str(p) for p in e["loc"][1:]) or "body", "problem": e["msg"]} for e in exc.errors()]
         return JSONResponse(status_code=400, content={"error": {
             "code": "BAD_PAYLOAD", "message": "the request body is not valid", "details": details}})
 
-    def require_token(authorization: str | None = Header(None)) -> str:
-        if not authorization or not authorization.lower().startswith("bearer "):
-            raise ApiError(401, "UNAUTHORIZED", "missing bearer token")
-        token_hash = hash_token(authorization[7:].strip())
-        if not db.token_exists(token_hash):
-            raise ApiError(401, "UNAUTHORIZED", "invalid token")
-        return token_hash
+    def require_auth(request: Request, authorization: str | None = Header(None)) -> str:
+        """Programs send the API token. The web UI sends its session cookie after a password login.
 
-    v1 = APIRouter(prefix="/v1", dependencies=[Depends(require_token)])
+        Returns a key identifying the caller (used for rate limiting)."""
+        if authorization:
+            if not authorization.lower().startswith("bearer "):
+                raise ApiError(401, "UNAUTHORIZED", "use 'Authorization: Bearer <token>'")
+            token_hash = hash_token(authorization[7:].strip())
+            if not db.token_exists(token_hash):
+                raise ApiError(401, "UNAUTHORIZED", "invalid token")
+            return token_hash
+        session = request.cookies.get(SESSION_COOKIE)
+        if session and db.session_valid(hash_token(session)):
+            # Another website cannot add this header, so it cannot ride on the browser's cookie.
+            if request.method not in ("GET", "HEAD") and request.headers.get(UI_HEADER) != "1":
+                raise ApiError(403, "FORBIDDEN", f"browser requests must send the {UI_HEADER} header")
+            return "web-ui"
+        raise ApiError(401, "UNAUTHORIZED", "sign in to the web UI, or send an API token")
+
+    def start_session(request: Request, response: Response) -> None:
+        token = new_session_token()
+        db.add_session(hash_token(token), datetime.now(timezone.utc) + SESSION_LIFETIME)
+        response.set_cookie(
+            SESSION_COOKIE, token, max_age=int(SESSION_LIFETIME.total_seconds()),
+            httponly=True, samesite="strict", secure=request.url.scheme == "https",
+        )
+
+    def is_local_request(request: Request) -> bool:
+        # Behind a reverse proxy every request looks local, so a forwarded request never counts.
+        forwarded = any(h in request.headers for h in ("x-forwarded-for", "forwarded", "x-real-ip"))
+        return not forwarded and request.client is not None and request.client.host in LOCAL_HOSTS
+
+    # ---- web UI password login (no authentication needed to reach these) ----
+
+    session_api = APIRouter(prefix="/v1/session")
+
+    @session_api.get("")
+    def session_status(request: Request):
+        session = request.cookies.get(SESSION_COOKIE)
+        return {
+            "passwordSet": db.get_state(PASSWORD_KEY) is not None,
+            "loggedIn": bool(session) and db.session_valid(hash_token(session)),
+            "setupAllowedHere": is_local_request(request),
+        }
+
+    @session_api.post("/setup")
+    def setup_password(body: PasswordSetupIn, request: Request, response: Response):
+        if db.get_state(PASSWORD_KEY) is not None:
+            raise ApiError(409, "PASSWORD_ALREADY_SET", "a password exists already, sign in instead")
+        if not is_local_request(request):
+            raise ApiError(403, "SETUP_LOCAL_ONLY",
+                           "set the first password on the PC running StakBridge, or run: run.bat password")
+        db.set_state(PASSWORD_KEY, hash_password(body.password))
+        log.warning("web UI password created")
+        start_session(request, response)
+        return {"loggedIn": True}
+
+    @session_api.post("")
+    def login(body: LoginIn, request: Request, response: Response):
+        client = request.client.host if request.client else "unknown"
+        if not login_limiter.allow(client):
+            raise ApiError(429, "TOO_MANY_ATTEMPTS", "too many sign-in attempts, wait a minute")
+        stored = db.get_state(PASSWORD_KEY)
+        if stored is None:
+            raise ApiError(409, "PASSWORD_NOT_SET", "no password yet, create one first")
+        if not verify_password(body.password, stored):
+            log.warning("wrong web UI password from %s", client)
+            raise ApiError(401, "WRONG_PASSWORD", "wrong password")
+        start_session(request, response)
+        return {"loggedIn": True}
+
+    @session_api.delete("")
+    def logout(request: Request, response: Response):
+        session = request.cookies.get(SESSION_COOKIE)
+        if session:
+            db.delete_session(hash_token(session))
+        response.delete_cookie(SESSION_COOKIE)
+        return {"loggedIn": False}
+
+    v1 = APIRouter(prefix="/v1", dependencies=[Depends(require_auth)])
 
     # ---- helpers ----
 
@@ -126,8 +211,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ---- trading ----
 
     @v1.post("/trade")
-    def post_trade(trade: TradeIn, token_hash: str = Depends(require_token)):
-        if not limiter.allow(token_hash):
+    def post_trade(trade: TradeIn, caller: str = Depends(require_auth)):
+        if not limiter.allow(caller):
             raise ApiError(429, "RATE_LIMITED", f"more than {settings.trade_rate_limit} trade requests per minute")
         return trades.execute(trade)
 
@@ -135,7 +220,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def list_trades(limit: int = 100, strategy: str | None = None):
         return {"trades": db.list_trades(limit=max(1, min(limit, 1000)), strategy=strategy)}
 
-    @v1.get("/trades/{request_id}")
+    @v1.get("/trades/{request_id:path}")  # :path so ids containing "/" still work
     def get_trade(request_id: str):
         trade = db.get_trade(request_id)
         if trade is None:
@@ -257,6 +342,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.set_strategy_accounts(tag, body.account_ids)
         return strategy_out(db.get_strategy(tag))
 
+    app.include_router(session_api)
     app.include_router(v1)
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="ui")
     return app

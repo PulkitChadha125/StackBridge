@@ -177,6 +177,9 @@ class Mt5Backend:
         for position in [p for p in positions or () if p.magic == magic]:
             tick = mt5.symbol_info_tick(position.symbol)
             info = mt5.symbol_info(position.symbol)
+            if tick is None or info is None:
+                failures.append({"ticket": position.ticket, "reason": "NO_PRICE"})
+                continue
             is_buy = position.type == mt5.POSITION_TYPE_BUY
             result = mt5.order_send({
                 "action": mt5.TRADE_ACTION_DEAL,
@@ -208,6 +211,7 @@ class Mt5Backend:
         mt5 = self.mt5
         positions = [p for p in mt5.positions_get() or () if magic is None or p.magic == magic]
         orders = [o for o in mt5.orders_get() or () if magic is None or o.magic == magic]
+        buy_types = {mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_BUY_STOP, mt5.ORDER_TYPE_BUY_STOP_LIMIT}
         return {
             "status": "ok",
             "positions": [
@@ -217,8 +221,8 @@ class Mt5Backend:
                 for p in positions
             ],
             "orders": [
-                {"ticket": o.ticket, "symbol": o.symbol, "volume": o.volume_current, "price": o.price_open,
-                 "magic": o.magic, "comment": o.comment}
+                {"ticket": o.ticket, "symbol": o.symbol, "side": "buy" if o.type in buy_types else "sell",
+                 "volume": o.volume_current, "price": o.price_open, "magic": o.magic, "comment": o.comment}
                 for o in orders
             ],
         }

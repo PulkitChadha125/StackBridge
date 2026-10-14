@@ -59,7 +59,7 @@ class TradeService:
         # allowed so positions can still be flattened during an emergency.
         if trade.action == "open":
             if self.db.get_kill_switch():
-                raise ApiError(409, "KILL_SWITCH_ON", "all trading is stopped, release it with DELETE /v1/kill")
+                raise ApiError(409, "KILL_SWITCH_ON", "all trading is stopped: press Resume trading in the UI or call DELETE /v1/kill")
             if not strategy["active"]:
                 raise ApiError(409, "STRATEGY_PAUSED", f"strategy '{trade.strategy}' is paused")
             if trade.volume > strategy["max_volume"] + 1e-9:

@@ -61,6 +61,10 @@ CREATE TABLE IF NOT EXISTS app_state (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS ui_sessions (
+    token_hash TEXT PRIMARY KEY,
+    expires_at TEXT NOT NULL
+);
 """
 
 
@@ -104,20 +108,50 @@ class Database:
             row = conn.execute("SELECT 1 FROM api_tokens WHERE token_hash = ?", (token_hash,)).fetchone()
         return row is not None
 
-    # ---- kill switch ----
+    # ---- app state (kill switch, UI password) ----
 
-    def get_kill_switch(self) -> bool:
+    def get_state(self, key: str) -> str | None:
         with self._connect() as conn:
-            row = conn.execute("SELECT value FROM app_state WHERE key = 'kill_switch'").fetchone()
-        return row is not None and row["value"] == "1"
+            row = conn.execute("SELECT value FROM app_state WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
 
-    def set_kill_switch(self, on: bool) -> None:
+    def set_state(self, key: str, value: str) -> None:
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO app_state (key, value) VALUES ('kill_switch', ?) "
-                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                ("1" if on else "0",),
+                "INSERT INTO app_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
             )
+
+    def get_kill_switch(self) -> bool:
+        return self.get_state("kill_switch") == "1"
+
+    def set_kill_switch(self, on: bool) -> None:
+        self.set_state("kill_switch", "1" if on else "0")
+
+    # ---- web UI sessions ----
+
+    def add_session(self, token_hash: str, expires_at: datetime) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM ui_sessions WHERE expires_at < ?", (now_iso(),))
+            conn.execute(
+                "INSERT INTO ui_sessions (token_hash, expires_at) VALUES (?, ?)",
+                (token_hash, expires_at.isoformat(timespec="milliseconds")),
+            )
+
+    def session_valid(self, token_hash: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM ui_sessions WHERE token_hash = ? AND expires_at > ?", (token_hash, now_iso())
+            ).fetchone()
+        return row is not None
+
+    def delete_session(self, token_hash: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM ui_sessions WHERE token_hash = ?", (token_hash,))
+
+    def delete_all_sessions(self) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM ui_sessions")
 
     # ---- accounts ----
 

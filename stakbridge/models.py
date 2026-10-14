@@ -76,3 +76,11 @@ class StrategyPatch(ApiModel):
 
 class StrategyAccounts(ApiModel):
     account_ids: list[str]
+
+
+class LoginIn(ApiModel):
+    password: str = Field(min_length=1, max_length=200)
+
+
+class PasswordSetupIn(ApiModel):
+    password: str = Field(min_length=8, max_length=200)
