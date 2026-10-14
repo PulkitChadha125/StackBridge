@@ -1,0 +1,55 @@
+"""Settings, read from environment variables with safe defaults."""
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+
+def _flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+@dataclass(frozen=True)
+class Settings:
+    data_dir: Path
+    # "mt5" talks to real MetaTrader 5 terminals, "fake" simulates them (tests, UI work without MT5).
+    backend: str = "mt5"
+    # Seconds the gateway waits for all accounts to answer a trade before reporting UNKNOWN.
+    trade_timeout: float = 10.0
+    # Max POST /v1/trade calls per token per minute.
+    trade_rate_limit: int = 120
+    # Seconds between connection checks inside each worker.
+    status_interval: float = 3.0
+    # Max price slippage in points for market orders.
+    deviation_points: int = 20
+    # Live (real money) accounts are refused unless this is switched on.
+    allow_live: bool = False
+
+    @property
+    def db_path(self) -> Path:
+        return self.data_dir / "stakbridge.db"
+
+    @property
+    def key_path(self) -> Path:
+        return self.data_dir / "secret.key"
+
+
+def load_settings(**overrides) -> Settings:
+    values = dict(
+        data_dir=Path(os.environ.get("STAKBRIDGE_DATA_DIR", Path.cwd() / "data")),
+        backend=os.environ.get("STAKBRIDGE_BACKEND", "mt5"),
+        trade_timeout=float(os.environ.get("STAKBRIDGE_TRADE_TIMEOUT", "10")),
+        trade_rate_limit=int(os.environ.get("STAKBRIDGE_TRADE_RATE_LIMIT", "120")),
+        status_interval=float(os.environ.get("STAKBRIDGE_STATUS_INTERVAL", "3")),
+        deviation_points=int(os.environ.get("STAKBRIDGE_DEVIATION_POINTS", "20")),
+        allow_live=_flag("STAKBRIDGE_ALLOW_LIVE"),
+    )
+    values.update(overrides)
+    if values["backend"] not in {"mt5", "fake"}:
+        raise ValueError("STAKBRIDGE_BACKEND must be 'mt5' or 'fake'")
+    settings = Settings(**values)
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    return settings
