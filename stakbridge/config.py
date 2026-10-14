@@ -27,6 +27,12 @@ class Settings:
     deviation_points: int = 20
     # Live (real money) accounts are refused unless this is switched on.
     allow_live: bool = False
+    # Copier: milliseconds between position checks on the master account.
+    copy_poll_ms: float = 2.0
+    # Copier: a master position found after a restart is copied only if it is at most this many seconds old.
+    copy_max_age: float = 30.0
+    # Copier: seconds between retries of client closes or SL/TP changes that did not go through.
+    copy_retry_interval: float = 2.0
 
     @property
     def db_path(self) -> Path:
@@ -46,6 +52,8 @@ def load_settings(**overrides) -> Settings:
         status_interval=float(os.environ.get("STAKBRIDGE_STATUS_INTERVAL", "3")),
         deviation_points=int(os.environ.get("STAKBRIDGE_DEVIATION_POINTS", "20")),
         allow_live=_flag("STAKBRIDGE_ALLOW_LIVE"),
+        copy_poll_ms=float(os.environ.get("STAKBRIDGE_COPY_POLL_MS", "2")),
+        copy_max_age=float(os.environ.get("STAKBRIDGE_COPY_MAX_AGE", "30")),
     )
     values.update(overrides)
     if values["backend"] not in {"mt5", "fake"}:

@@ -103,9 +103,15 @@ class TradeService:
 
         for account_id, future in futures.items():
             if future.done():
-                self.db.save_result(trade.request_id, account_id, _outcome(future))
+                result = _outcome(future)
+                if result["status"] in ("rejected", "unknown"):
+                    log.warning("trade %s on %s %s: %s", trade.request_id, account_id, result["status"],
+                                result.get("reason"), extra={"account": account_id})
+                self.db.save_result(trade.request_id, account_id, result)
             else:
                 # Never resend. Record UNKNOWN now and let the real answer overwrite it when it arrives.
+                log.warning("trade %s on %s: no answer within %s s, shown as unknown", trade.request_id, account_id,
+                            self.timeout, extra={"account": account_id})
                 self.db.save_result(trade.request_id, account_id, {"status": "unknown", "reason": "TIMEOUT"})
                 future.add_done_callback(partial(self._late_result, trade.request_id, account_id))
 
@@ -143,7 +149,8 @@ class TradeService:
     def _late_result(self, request_id: str, account_id: str, future: Future) -> None:
         result = _outcome(future)
         result.setdefault("detail", {})["lateReply"] = True
-        log.warning("late reply for %s on %s: %s", request_id, account_id, result["status"])
+        log.warning("late reply for trade %s on %s: %s", request_id, account_id, result["status"],
+                    extra={"account": account_id})
         self.db.save_result(request_id, account_id, result)
 
 

@@ -11,15 +11,19 @@ from fastapi import APIRouter, Depends, FastAPI, Header, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic.alias_generators import to_camel
 
 from . import __version__
+from .applog import AppLog
 from .config import Settings, load_settings
+from .copier import Copier
 from .db import Database
-from .models import (AccountIn, AccountPatch, LoginIn, PasswordSetupIn, StrategyAccounts, StrategyIn,
+from .models import (AccountIn, AccountPatch, CopierIn, LoginIn, PasswordSetupIn, StrategyAccounts, StrategyIn,
                      StrategyPatch, TradeIn)
 from .security import PasswordCipher, hash_password, hash_token, new_session_token, verify_password
 from .trading import ApiError, RateLimiter, TradeService
 from .workers import WorkerGone, WorkerManager
+from .workers.backends import normalize_terminal_path, terminal_path_problem
 
 log = logging.getLogger("stakbridge.api")
 STATIC_DIR = Path(__file__).parent / "static"
@@ -37,32 +41,44 @@ LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or load_settings()
     db = Database(settings.db_path)
+    applog = AppLog(db)
     cipher = PasswordCipher(settings.key_path)
     workers = WorkerManager(settings)
     trades = TradeService(db, workers, settings.trade_timeout)
+    copier = Copier(db, workers, settings)
     limiter = RateLimiter(settings.trade_rate_limit)
     login_limiter = RateLimiter(LOGIN_ATTEMPTS_PER_MINUTE)
 
     def sync_worker(account: dict) -> None:
         if account["enabled"]:
-            workers.ensure(account, cipher.decrypt(account["password_enc"]))
+            # The copier's master is watched: its worker reports every position change.
+            workers.ensure(account, cipher.decrypt(account["password_enc"]), watch=account["id"] == copier.master_id)
         else:
             workers.remove(account["id"])
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        applog.start()
         workers.start()
+        copier.start()
         for account in db.list_accounts():
+            fixed = normalize_terminal_path(account["terminal_path"])
+            if fixed != account["terminal_path"]:  # e.g. a folder saved before folders were accepted
+                db.update_account(account["id"], {"terminal_path": fixed})
+                account["terminal_path"] = fixed
+                log.info("terminal path of %s corrected to %s", account["id"], fixed, extra={"account": account["id"]})
             try:
                 sync_worker(account)
             except InvalidToken:
                 log.error("cannot decrypt the password of %s (secret key changed?), re-enter it in the UI", account["id"])
         log.info("StakBridge %s started with backend=%s", __version__, settings.backend)
         yield
+        copier.stop()
         workers.stop_all()
+        applog.stop()
 
     app = FastAPI(title="StakBridge", version=__version__, lifespan=lifespan)
-    app.state.settings, app.state.db, app.state.workers = settings, db, workers
+    app.state.settings, app.state.db, app.state.workers, app.state.copier = settings, db, workers, copier
 
     @app.exception_handler(ApiError)
     async def api_error(_: Request, exc: ApiError):
@@ -198,6 +214,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise ApiError(404, "STRATEGY_NOT_FOUND", f"strategy '{tag}' does not exist")
         return strategy
 
+    def clean_terminal_path(terminal_path: str) -> str:
+        path = normalize_terminal_path(terminal_path)
+        problem = terminal_path_problem(path) if settings.backend == "mt5" else None
+        if problem:
+            raise ApiError(400, "TERMINAL_PATH_INVALID",
+                           f"Terminal path: {problem}. Example: C:\\Program Files\\MetaTrader 5\\terminal64.exe")
+        return path
+
     def check_terminal_free(terminal_path: str, exclude_id: str | None = None) -> None:
         # One terminal can only be logged into one account, so two accounts must not share it.
         if settings.backend != "mt5":
@@ -230,12 +254,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @v1.post("/kill")
     def kill():
         db.set_kill_switch(True)
+        copier.reload()
         log.warning("kill switch turned ON")
         return {"killSwitch": True}
 
     @v1.delete("/kill")
     def release_kill():
         db.set_kill_switch(False)
+        copier.reload()
         log.warning("kill switch released")
         return {"killSwitch": False}
 
@@ -262,6 +288,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         account_id = body.id or f"acct_{uuid.uuid4().hex[:8]}"
         if db.get_account(account_id) is not None:
             raise ApiError(409, "ACCOUNT_EXISTS", f"account '{account_id}' already exists")
+        body.terminal_path = clean_terminal_path(body.terminal_path)
         check_terminal_free(body.terminal_path)
         db.insert_account({
             "id": account_id,
@@ -274,6 +301,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "enabled": body.enabled,
         })
         account = db.get_account(account_id)
+        copier.reload()
         sync_worker(account)
         return account_out(account)
 
@@ -283,11 +311,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         changes = body.model_dump(exclude_none=True)
         reconnect = bool(CONNECTION_FIELDS & changes.keys())
         if "terminal_path" in changes:
+            changes["terminal_path"] = clean_terminal_path(changes["terminal_path"])
             check_terminal_free(changes["terminal_path"], exclude_id=account_id)
         if "password" in changes:
             changes["password_enc"] = cipher.encrypt(changes.pop("password"))
         db.update_account(account_id, changes)
         account = db.get_account(account_id)
+        copier.reload()
         if reconnect:
             sync_worker(account)
         return account_out(account)
@@ -295,8 +325,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @v1.delete("/accounts/{account_id}")
     def remove_account(account_id: str):
         load_account(account_id)
+        config = db.get_copier()
+        if account_id == config["masterId"] or any(c["accountId"] == account_id for c in config["clients"]):
+            if account_id == config["masterId"]:
+                config.update(masterId=None, active=False)
+            config["clients"] = [c for c in config["clients"] if c["accountId"] != account_id]
+            db.set_copier(config)
+            copier.configure(config)
         workers.remove(account_id)
         db.delete_account(account_id)
+        copier.reload()
         return {"deleted": account_id}
 
     @v1.get("/accounts/{account_id}/positions")
@@ -341,6 +379,56 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise ApiError(400, "UNKNOWN_ACCOUNT", f"unknown account ids: {', '.join(unknown)}")
         db.set_strategy_accounts(tag, body.account_ids)
         return strategy_out(db.get_strategy(tag))
+
+    # ---- app log ----
+
+    @v1.get("/logs")
+    def list_logs(limit: int = 200, level: str = "info"):
+        return {"logs": db.list_logs(limit=max(1, min(limit, 2000)), level=level)}
+
+    @v1.delete("/logs")
+    def clear_logs():
+        db.clear_logs()
+        log.info("log cleared")
+        return {"cleared": True}
+
+    # ---- copier ----
+
+    def copier_out() -> dict:
+        copies = [{to_camel(k): v for k, v in row.items()} for row in db.list_copies()]
+        return {**db.get_copier(), **copier.status(), "copies": copies}
+
+    @v1.get("/copier")
+    def get_copier():
+        return copier_out()
+
+    @v1.put("/copier")
+    def set_copier(body: CopierIn):
+        accounts = {a["id"]: a for a in db.list_accounts()}
+        client_ids = [c.account_id for c in body.clients]
+        unknown = [a for a in [body.master_id, *client_ids] if a and a not in accounts]
+        if unknown:
+            raise ApiError(400, "UNKNOWN_ACCOUNT", f"unknown account ids: {', '.join(unknown)}")
+        if body.master_id in client_ids:
+            raise ApiError(400, "MASTER_IS_CLIENT", "the master account cannot also be a client")
+        if len(set(client_ids)) != len(client_ids):
+            raise ApiError(400, "DUPLICATE_CLIENT", "each client account can be listed only once")
+        if body.active and not body.master_id:
+            raise ApiError(400, "NO_MASTER", "choose a master account before switching the copier on")
+
+        old_master = copier.master_id
+        config = {"masterId": body.master_id, "active": body.active,
+                  "clients": [{"accountId": c.account_id, "multiplier": c.multiplier, "symbols": c.symbols}
+                              for c in body.clients]}
+        db.set_copier(config)
+        copier.configure(config)
+        if old_master != body.master_id:
+            if old_master:
+                workers.set_watch(old_master, False)
+            if body.master_id:
+                workers.set_watch(body.master_id, True)
+        log.warning("copier set: master=%s active=%s clients=%s", body.master_id, body.active, client_ids)
+        return copier_out()
 
     app.include_router(session_api)
     app.include_router(v1)

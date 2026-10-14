@@ -8,10 +8,18 @@ Every method returns plain dicts so results can travel over a multiprocessing pi
     open(order)       -> {"status": "filled"|"placed"|"rejected", "reason", "ticket", "price", "volume"}
     close(magic, sym) -> {"status": "closed"|"rejected", "reason", "detail": {...}}
     positions(magic)  -> {"status": "ok", "positions": [...], "orders": [...]}
+
+Used by the copier:
+    snapshot(with_age)          -> {ticket: {...}} of all open positions, or None if they could not be read
+    close_position(ticket)      -> {"status": "closed"|"rejected", "reason", "price", "volume", "detail"}
+    modify_position(ticket, ..) -> {"status": "modified"|"rejected", "reason"}
+Order results carry "elapsedMs": how long the broker took to answer order_send.
 """
 
 import itertools
 import math
+import os
+import time
 
 MAX_COMMENT = 31  # MT5 limit
 
@@ -27,6 +35,42 @@ def normalize_volume(volume: float, vmin: float, vmax: float, step: float) -> tu
     if volume > vmax + 1e-9:
         return None, "VOLUME_ABOVE_BROKER_MAX"
     return volume, None
+
+
+TERMINAL_EXE = "terminal64.exe"
+
+# MT5 Python errors from initialize(), in words a person can act on.
+_CONNECT_ERRORS = {
+    -6: ("LOGIN_FAILED", "wrong login, password or server"),
+    -10003: ("TERMINAL_NOT_STARTED", "MetaTrader could not be started. Check the Terminal path and that this "
+                                     "MetaTrader opens when you double-click it"),
+    -10004: ("TERMINAL_NOT_REACHED", "MetaTrader is not answering. Close it and let StakBridge start it again"),
+    -10005: ("TERMINAL_NOT_REACHED", "MetaTrader took too long to answer (still starting or busy). StakBridge retries"),
+}
+
+
+def normalize_terminal_path(path: str) -> str:
+    """Cleans a Terminal path as people paste it: drops quotes, and adds terminal64.exe to a folder."""
+    path = (path or "").strip().strip('"').strip()
+    if path and os.path.isdir(path):
+        path = os.path.join(path, TERMINAL_EXE)
+    return path
+
+
+def terminal_path_problem(path: str) -> str | None:
+    """Why a (normalized) Terminal path cannot work, or None if it looks fine. Empty means the default MT5."""
+    if not path:
+        return None
+    if not os.path.isfile(path):
+        return f"nothing found at '{path}'"
+    if not path.lower().endswith(".exe"):
+        return f"'{path}' is not a program. Use the full path to {TERMINAL_EXE}"
+    return None
+
+
+def connect_error(code: int, message: str) -> str:
+    kind, explanation = _CONNECT_ERRORS.get(code, ("LOGIN_FAILED", None))
+    return f"{kind}: {explanation} ({code} {message})" if explanation else f"{kind}: {code} {message}"
 
 
 def make_backend(config: dict):
@@ -53,12 +97,16 @@ class Mt5Backend:
             "server": self.config["server"],
             "timeout": 60_000,
         }
-        if self.config.get("terminal_path"):
-            kwargs["path"] = self.config["terminal_path"]
+        path = normalize_terminal_path(self.config.get("terminal_path", ""))
+        problem = terminal_path_problem(path)
+        if problem:
+            return {"status": "error", "reason": f"TERMINAL_PATH_INVALID: {problem}", "info": {}}
+        if path:
+            kwargs["path"] = path
         if not mt5.initialize(**kwargs):
             code, message = mt5.last_error()
             mt5.shutdown()
-            return {"status": "error", "reason": f"LOGIN_FAILED: {code} {message}", "info": {}}
+            return {"status": "error", "reason": connect_error(code, message), "info": {}}
         self.initialized = True
 
         account = mt5.account_info()
@@ -158,15 +206,19 @@ class Mt5Backend:
                 type_time=mt5.ORDER_TIME_GTC,
             )
 
+        started = time.perf_counter()
         result = mt5.order_send(request)
+        elapsed = _ms_since(started)
         if result is None:
             code, message = mt5.last_error()
-            return {"status": "rejected", "reason": f"ORDER_SEND_FAILED: {code} {message}"}
+            return {"status": "rejected", "reason": f"ORDER_SEND_FAILED: {code} {message}", "elapsedMs": elapsed}
         if result.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_DONE_PARTIAL):
-            return {"status": "filled", "ticket": result.order, "price": result.price, "volume": result.volume}
+            return {"status": "filled", "ticket": result.order, "price": result.price, "volume": result.volume,
+                    "elapsedMs": elapsed}
         if result.retcode == mt5.TRADE_RETCODE_PLACED:
-            return {"status": "placed", "ticket": result.order, "price": request["price"], "volume": volume}
-        return {"status": "rejected", "reason": f"BROKER_{result.retcode}: {result.comment}"}
+            return {"status": "placed", "ticket": result.order, "price": request["price"], "volume": volume,
+                    "elapsedMs": elapsed}
+        return {"status": "rejected", "reason": f"BROKER_{result.retcode}: {result.comment}", "elapsedMs": elapsed}
 
     def close(self, magic: int, symbol: str | None) -> dict:
         mt5 = self.mt5
@@ -207,6 +259,86 @@ class Mt5Backend:
 
         return _close_result(closed, cancelled, failures)
 
+    # ---- copier ----
+
+    def _positions_or_none(self, **filters):
+        """positions_get() that tells "no positions" apart from "could not read them"."""
+        positions = self.mt5.positions_get(**filters)
+        if positions is None:
+            code, _ = self.mt5.last_error()
+            return () if code == 1 else None  # 1 = RES_S_OK: the call worked, there is just nothing
+        return positions
+
+    def snapshot(self, with_age: bool = False) -> dict | None:
+        mt5 = self.mt5
+        positions = self._positions_or_none()
+        if positions is None:
+            return None
+        snapshot = {}
+        for p in positions:
+            item = {"ticket": p.ticket, "symbol": p.symbol, "side": "buy" if p.type == mt5.POSITION_TYPE_BUY else "sell",
+                    "volume": p.volume, "sl": p.sl, "tp": p.tp, "magic": p.magic}
+            if with_age:
+                # Age in broker server time: the last quote of the symbol is the best "now" the terminal has.
+                tick = mt5.symbol_info_tick(p.symbol)
+                item["ageS"] = (tick.time_msc - p.time_msc) / 1000 if tick is not None else None
+            snapshot[p.ticket] = item
+        return snapshot
+
+    def close_position(self, ticket: int) -> dict:
+        mt5 = self.mt5
+        found = self._positions_or_none(ticket=ticket)
+        if found is None:
+            code, message = mt5.last_error()
+            return {"status": "rejected", "reason": f"CANNOT_READ_POSITIONS: {code} {message}"}
+        if not found:
+            return {"status": "closed", "detail": {"alreadyClosed": True}}  # e.g. its own SL or TP hit first
+        position = found[0]
+        tick = mt5.symbol_info_tick(position.symbol)
+        info = mt5.symbol_info(position.symbol)
+        if tick is None or info is None:
+            return {"status": "rejected", "reason": "NO_PRICE"}
+        is_buy = position.type == mt5.POSITION_TYPE_BUY
+        started = time.perf_counter()
+        result = mt5.order_send({
+            "action": mt5.TRADE_ACTION_DEAL,
+            "position": position.ticket,
+            "symbol": position.symbol,
+            "volume": position.volume,
+            "type": mt5.ORDER_TYPE_SELL if is_buy else mt5.ORDER_TYPE_BUY,
+            "price": tick.bid if is_buy else tick.ask,
+            "deviation": self.config["deviation_points"],
+            "magic": position.magic,
+            "type_filling": self._filling(info),
+            "type_time": mt5.ORDER_TIME_GTC,
+        })
+        elapsed = _ms_since(started)
+        if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
+            return {"status": "closed", "price": result.price, "volume": result.volume, "elapsedMs": elapsed}
+        return {"status": "rejected", "reason": _retcode_text(mt5, result), "elapsedMs": elapsed}
+
+    def modify_position(self, ticket: int, sl: float, tp: float) -> dict:
+        mt5 = self.mt5
+        found = self._positions_or_none(ticket=ticket)
+        if not found:
+            return {"status": "rejected", "reason": "POSITION_NOT_FOUND"}
+        position = found[0]
+        info = mt5.symbol_info(position.symbol)
+        digits = info.digits if info is not None else 5
+        started = time.perf_counter()
+        result = mt5.order_send({
+            "action": mt5.TRADE_ACTION_SLTP,
+            "position": ticket,
+            "symbol": position.symbol,
+            "sl": round(sl, digits) if sl else 0.0,
+            "tp": round(tp, digits) if tp else 0.0,
+            "magic": position.magic,
+        })
+        elapsed = _ms_since(started)
+        if result is not None and result.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_NO_CHANGES):
+            return {"status": "modified", "elapsedMs": elapsed}
+        return {"status": "rejected", "reason": _retcode_text(mt5, result), "elapsedMs": elapsed}
+
     def positions(self, magic: int | None) -> dict:
         mt5 = self.mt5
         positions = [p for p in mt5.positions_get() or () if magic is None or p.magic == magic]
@@ -226,6 +358,10 @@ class Mt5Backend:
                 for o in orders
             ],
         }
+
+
+def _ms_since(started: float) -> float:
+    return round((time.perf_counter() - started) * 1000, 2)
 
 
 def _retcode_text(mt5, result) -> str:
@@ -309,6 +445,28 @@ class FakeBackend:
         for ticket in cancelling:
             del self.orders_by_ticket[ticket]
         return _close_result(len(closing), len(cancelling), [])
+
+    def snapshot(self, with_age: bool = False) -> dict | None:
+        snapshot = {}
+        for ticket, p in self.positions_by_ticket.items():
+            item = {k: p[k] for k in ("ticket", "symbol", "side", "volume", "sl", "tp", "magic")}
+            if with_age:
+                item["ageS"] = 0.0
+            snapshot[ticket] = item
+        return snapshot
+
+    def close_position(self, ticket: int) -> dict:
+        position = self.positions_by_ticket.pop(ticket, None)
+        if position is None:
+            return {"status": "closed", "detail": {"alreadyClosed": True}}
+        return {"status": "closed", "price": position["price"], "volume": position["volume"], "elapsedMs": 0.0}
+
+    def modify_position(self, ticket: int, sl: float, tp: float) -> dict:
+        position = self.positions_by_ticket.get(ticket)
+        if position is None:
+            return {"status": "rejected", "reason": "POSITION_NOT_FOUND"}
+        position["sl"], position["tp"] = sl or 0.0, tp or 0.0
+        return {"status": "modified", "elapsedMs": 0.0}
 
     def positions(self, magic: int | None) -> dict:
         return {

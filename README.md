@@ -56,6 +56,8 @@ To try everything without MT5, set `$env:STAKBRIDGE_BACKEND = "fake"` before `se
 | `STAKBRIDGE_DEVIATION_POINTS` | `20` | Max slippage for market orders |
 | `STAKBRIDGE_ALLOW_LIVE` | off | Live accounts are refused unless this is `1` |
 | `STAKBRIDGE_SECRET_KEY` | key file | Password encryption key. If not set, `data/secret.key` is created. Back it up. |
+| `STAKBRIDGE_COPY_POLL_MS` | `2` | Copier: how often the master's positions are checked, in milliseconds |
+| `STAKBRIDGE_COPY_MAX_AGE` | `30` | Copier: after a restart, a master position StakBridge missed is copied only if it is at most this many seconds old |
 
 For HTTPS, pass `--ssl-certfile` and `--ssl-keyfile` to `serve`, or put it behind a reverse proxy.
 
@@ -79,6 +81,10 @@ For HTTPS, pass `--ssl-certfile` and `--ssl-keyfile` to `serve`, or put it behin
 - `DELETE /v1/kill`: releases Stop all.
 - `GET /v1/trades`: the trade log used by the Trades tab.
 - `GET /v1/accounts/{id}/positions`: open positions and pending orders of one account (the **Positions** button in the UI).
+- **Trade copier** (Copier tab): mirrors one master account onto client accounts, with a lot multiplier per client. Opens, SL/TP changes and closes are copied. Each client can map symbols that its broker names differently (for example master `XAUUSD` → client `GOLD`). Unmapped symbols use the account suffixes. `GET /v1/copier` returns the settings and recent copies; `PUT /v1/copier` with `{"masterId", "active", "clients": [{"accountId", "multiplier", "symbols": {"XAUUSD": "GOLD"}}]}` changes them. How to test it: [TESTING.md, Part 6](TESTING.md#part-6-test-the-copier).
+- Appearance: **System**, **Light** or **Dark**, top right. Remembered per browser.
+- **Log** tab: StakBridge's own events, kept in the database (newest 5000): connects and disconnects, connection errors in plain words, refused orders, copier problems and settings changes. `GET /v1/logs?level=info|warning|error` and `DELETE /v1/logs`.
+- Terminal path: a MetaTrader folder or a quoted path is accepted and turned into the `terminal64.exe` path. In real MT5 mode a path with no program behind it is refused when you save it (`TERMINAL_PATH_INVALID`).
 - Trades tab: a collapsed **Send a trade request** panel for testing without curl.
 - `GET/POST/DELETE /v1/session` and `POST /v1/session/setup`: web page password sign-in. The browser gets a 30-day session cookie (HttpOnly, SameSite=Strict). Every browser request that changes something must also send the `X-StakBridge: 1` header, so other websites can't misuse the cookie. Sign-in is limited to 10 attempts per minute.
 - Errors use the shape `{"error": {"code", "message"}}`. `409 KILL_SWITCH_ON` is returned for opens while stopped.
@@ -90,6 +96,7 @@ For HTTPS, pass `--ssl-certfile` and `--ssl-keyfile` to `serve`, or put it behin
 stakbridge/
   api.py              REST endpoints and UI serving
   trading.py          strategy-tag routing and parallel fan-out
+  copier.py           trade copier: mirrors the master's positions onto the clients
   db.py               SQLite storage
   models.py           request validation
   security.py         token hashing, password encryption

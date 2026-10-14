@@ -21,9 +21,11 @@ class WorkerGone(Exception):
 
 
 class WorkerHandle:
-    def __init__(self, account_id: str, config: dict):
+    def __init__(self, account_id: str, config: dict, on_event=None):
         self.account_id = account_id
         self.config = config
+        self._on_event = on_event  # called with (account_id, message) for position events
+        self._last_logged: tuple | None = None  # last status written to the app log, so retries don't repeat it
         self.status = "starting"
         self.reason: str | None = None
         self.info: dict = {}
@@ -66,7 +68,15 @@ class WorkerHandle:
                 message = self._conn.recv()
                 if message.get("event") == "status":
                     self.status, self.reason, self.info = message["status"], message["reason"], message["info"]
-                    log.info("account %s is %s %s", self.account_id, self.status, self.reason or "")
+                    self._log_status()
+                    continue
+                if message.get("event") == "positions":
+                    if self._on_event is not None:
+                        try:
+                            self._on_event(self.account_id, message)
+                        except Exception:  # a copier bug must not stop replies from this worker
+                            log.exception("copier failed on a position change from %s", self.account_id,
+                                          extra={"account": self.account_id})
                     continue
                 with self._lock:
                     future = self._pending.pop(message["id"], None)
@@ -79,6 +89,26 @@ class WorkerHandle:
             pending, self._pending = list(self._pending.values()), {}
         for future in pending:
             future.set_exception(WorkerGone(self.account_id))
+
+    def _log_status(self) -> None:
+        """Writes connects and problems to the app log. "connecting" is skipped, and a problem is
+        written once, not on every retry."""
+        if self.status in ("starting", "connecting"):
+            return
+        current = (self.status, self.reason)
+        if current == self._last_logged:
+            return
+        self._last_logged = current
+        extra = {"account": self.account_id}
+        if self.status == "error":
+            log.error("%s cannot connect: %s", self.account_id, self.reason, extra=extra)
+        elif self.status == "disconnected":
+            log.warning("%s disconnected: %s", self.account_id, self.reason, extra=extra)
+        elif self.reason:  # connected, but with a warning such as ALGO_TRADING_OFF_IN_TERMINAL
+            log.warning("%s connected, but: %s", self.account_id, self.reason, extra=extra)
+        else:
+            log.info("%s connected (balance %s %s)", self.account_id, self.info.get("balance"),
+                     self.info.get("currency", ""), extra=extra)
 
     def stop(self, wait: float = 5.0) -> None:
         with self._lock:
@@ -104,8 +134,14 @@ class WorkerManager:
         self._lock = threading.Lock()
         self._running = False
         self._supervisor: threading.Thread | None = None
+        # Set by the copier: receives position events from a watched (master) account.
+        self.on_event = None
 
-    def _worker_config(self, account: dict, password: str) -> dict:
+    def _emit(self, account_id: str, message: dict) -> None:
+        if self.on_event is not None:
+            self.on_event(account_id, message)
+
+    def _worker_config(self, account: dict, password: str, watch: bool) -> dict:
         return {
             "account_id": account["id"],
             "login": account["login"],
@@ -116,6 +152,7 @@ class WorkerManager:
             "status_interval": self.settings.status_interval,
             "deviation_points": self.settings.deviation_points,
             "allow_live": self.settings.allow_live,
+            "watch_ms": self.settings.copy_poll_ms if watch else None,
         }
 
     def start(self) -> None:
@@ -123,9 +160,11 @@ class WorkerManager:
         self._supervisor = threading.Thread(target=self._supervise, name="worker-supervisor", daemon=True)
         self._supervisor.start()
 
-    def ensure(self, account: dict, password: str) -> None:
-        """Starts the account's worker, or restarts it if its connection details changed."""
-        config = self._worker_config(account, password)
+    def ensure(self, account: dict, password: str, watch: bool = False) -> None:
+        """Starts the account's worker, or restarts it if its connection details changed.
+
+        watch=True makes the worker report every change of its open positions (copier master)."""
+        config = self._worker_config(account, password, watch)
         with self._lock:
             current = self._workers.get(account["id"])
             if current is not None and self._configs.get(account["id"]) == config and current.alive:
@@ -134,9 +173,21 @@ class WorkerManager:
             old = self._workers.pop(account["id"], None)
         if old is not None:
             old.stop()
-        handle = WorkerHandle(account["id"], config)
+        handle = WorkerHandle(account["id"], config, self._emit)
         with self._lock:
             self._workers[account["id"]] = handle
+
+    def set_watch(self, account_id: str, watch: bool) -> None:
+        """Starts or stops position reports from a running worker without logging it in again."""
+        watch_ms = self.settings.copy_poll_ms if watch else None
+        with self._lock:
+            config = self._configs.get(account_id)
+            if config is None or config["watch_ms"] == watch_ms:
+                return
+            config["watch_ms"] = watch_ms  # a restarted worker keeps it
+            handle = self._workers.get(account_id)
+        if handle is not None:
+            handle.send("watch", watch_ms=watch_ms)
 
     def remove(self, account_id: str) -> None:
         with self._lock:
@@ -163,9 +214,10 @@ class WorkerManager:
             for account_id, old, config in dead:
                 if not self._running:
                     return
-                log.warning("worker for %s stopped, restarting", account_id)
+                log.warning("the worker for %s stopped unexpectedly, restarting it", account_id,
+                            extra={"account": account_id})
                 old.stop(wait=0)
-                handle = WorkerHandle(account_id, config)
+                handle = WorkerHandle(account_id, config, self._emit)
                 with self._lock:
                     if account_id in self._configs:
                         self._workers[account_id] = handle

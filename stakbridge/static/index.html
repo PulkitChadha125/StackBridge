@@ -4,6 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>StakBridge</title>
+  <script>
+    // Apply the saved appearance before the page paints, so it never flashes the wrong colours.
+    try { const t = localStorage.getItem("stakbridge-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch {}
+  </script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,8 +17,15 @@
       <button data-tab="accounts" class="active">Accounts</button>
       <button data-tab="strategies">Strategies</button>
       <button data-tab="trades">Trades</button>
+      <button data-tab="copier">Copier</button>
+      <button data-tab="log">Log <span id="log-badge" class="count" hidden></span></button>
     </nav>
     <div class="right">
+      <div class="theme-switch" role="group" aria-label="Appearance">
+        <button type="button" data-theme-choice="system" title="Follow the system setting">System</button>
+        <button type="button" data-theme-choice="light" title="Always light">Light</button>
+        <button type="button" data-theme-choice="dark" title="Always dark">Dark</button>
+      </div>
       <span id="kill-banner" hidden>Trading stopped</span>
       <button id="kill-btn" class="danger" hidden>Stop all</button>
       <button id="logout-btn" class="link" hidden>Sign out</button>
@@ -62,7 +73,7 @@
           <label>Password <input name="password" type="password" autocomplete="new-password" required></label>
           <label>Server <input name="server" placeholder="e.g. Broker-Demo" required></label>
           <label>Symbol suffix <input name="symbolSuffix" maxlength="16" placeholder="e.g. .m (empty if none)"></label>
-          <label class="wide">Terminal path <input name="terminalPath" placeholder="C:\MT5\acct_a\terminal64.exe (one terminal folder per account)"></label>
+          <label class="wide">Terminal path <input name="terminalPath" placeholder="C:\Program Files\MetaTrader 5\terminal64.exe (or just its folder). One MetaTrader per account."></label>
           <div class="wide actions">
             <button type="submit" class="primary" id="account-submit">Add account</button>
             <button type="button" id="account-cancel" hidden>Cancel edit</button>

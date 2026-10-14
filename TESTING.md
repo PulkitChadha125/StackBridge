@@ -1,203 +1,366 @@
-# Testing StakBridge v1
+# How to test StakBridge on your PC
 
-The spec says v1 is done when the 9 acceptance tests in section 7 pass on demo accounts. Work through the stages in order. Each stage only needs the one before it.
+This guide walks you through testing StakBridge with the 3 MetaTrader 5 programs on your computer. Follow the parts in order. You don't need to know any code.
 
-| Stage | What it proves | Needs MT5? | Time |
+**What you will test**
+
+- **The copier.** You trade on one account (the **master**), and StakBridge copies every trade to the other two accounts (the **clients**). When you close on the master, the clients close too.
+- **Strategy trading** (optional, Part 8). Another program sends a trade to StakBridge, and StakBridge places it on several accounts at once.
+
+**Time needed:** about 1 hour the first time. Do it while the market is open (Monday to Friday). At the weekend every order is refused.
+
+---
+
+## Your 3 MetaTrader 5 programs
+
+These are already installed on your PC. Each one is logged into its own account:
+
+| StakBridge name | Role | MetaTrader 5 program (Terminal path) |
+| --- | --- | --- |
+| **acct_a** | Master: you trade here | `C:\Program Files\MetaTrader 5\terminal64.exe` |
+| **acct_b** | Client 1: gets copies | `C:\Program Files\STARTRADER Financial MetaTrader 5\terminal64.exe` |
+| **acct_c** | Client 2: gets copies | `C:\Program Files\MetaTrader 5 - C\terminal64.exe` |
+
+> **Rule:** one MT5 program = one account. Never log two StakBridge accounts into the same program.
+
+---
+
+## Part 1: Quick check (2 minutes)
+
+1. Open the folder `D:\Desktop\python projects\StackBridge`.
+2. Double-click **`run_tests.bat`**. A black window opens. The first time, it installs things, which takes a few minutes.
+3. Wait until it stops. At the bottom you should see **`48 passed`**.
+4. Press any key to close the window.
+
+If you see `failed` instead, stop here and send me what the window shows.
+
+---
+
+## Part 2: Get the 3 MetaTrader programs ready (one time, about 15 minutes)
+
+### Step 1: Get 3 demo accounts
+
+You need **3 different demo accounts** (practice money, not real money).
+
+- In the **STARTRADER** program, open a STARTRADER demo account.
+- In the other two MetaTrader programs, open a demo account on any broker. `MetaQuotes-Demo` works.
+
+To open a demo account in any MetaTrader program: **File → Open an Account**, pick the broker, choose **Open a demo account**, and follow the steps.
+
+For each account, **write down**:
+
+| | acct_a | acct_b | acct_c |
 | --- | --- | --- | --- |
-| [1. Automated tests](#stage-1-automated-tests) | The code follows the spec rules | No | 1 min |
-| [2. Simulated broker walkthrough](#stage-2-simulated-broker-walkthrough) | The UI and API work end to end | No | 15 min |
-| [3. Real MT5 demo accounts](#stage-3-real-mt5-demo-accounts) | Real orders reach real terminals | Yes, 3 demo accounts | 45 min |
+| Login (a number) | | | |
+| Password | | | |
+| Server (exactly as written, e.g. `MetaQuotes-Demo`) | | | |
+| Gold symbol name (see Step 4) | | | |
+
+> The accounts must be **"hedging"** accounts. Most demo accounts are. If an account isn't, StakBridge will tell you with `NETTING_NOT_SUPPORTED`, and you'll need to open another one.
+
+### Step 2: Log each program into its account
+
+Open each MetaTrader program from the table at the top and log it into **its own** account: **File → Login to Trade Account**, then enter the login, password and server.
+
+You know it worked when the bottom-right corner of MetaTrader shows a speed number like `45 / 3 kb` instead of `No connection`.
+
+### Step 3: Turn on Algo Trading in all 3
+
+In each MetaTrader program, click the **Algo Trading** button on the top toolbar so it turns **green**.
+
+If you skip this, the accounts can't trade through StakBridge.
+
+### Step 4: Find each broker's name for gold
+
+Different brokers can give the same thing different names. In each program, look at the **Market Watch** list on the left (press **Ctrl+M** if you don't see it) and find gold. If it doesn't appear, right-click Market Watch → **Show All**.
+
+Write down **exactly** how each program spells it. Capitals and dots count. You'll see one of these:
+
+- **`XAUUSD`**: the plain name. Nothing to do.
+- **`XAUUSD` plus something extra**, like `XAUUSD.m`, `XAUUSDm` or `XAUUSD.x`: the extra part (`.m`, `m`, `.x`) is that account's **suffix**. You'll type it in Part 4.
+- **A completely different name**, like `GOLD` or `GOLD.pro`: you'll tell the copier the name in Part 5, step 5 (**symbol mapping**).
+
+Do the same for any other symbol you plan to copy, for example EURUSD.
+
+### Step 5: Leave all 3 programs open
+
+Keep all 3 MetaTrader programs open and logged in while you test. If one closes, StakBridge reopens it by itself within about 10 seconds.
 
 ---
 
-## Stage 1: Automated tests
+## Part 3: Start StakBridge
 
-Double-click **`run_tests.bat`**. The first run creates `.venv` and installs the packages.
+1. In the StakBridge folder, double-click **`run.bat`**.
+2. A black window opens. **Keep it open the whole time.** Closing it stops StakBridge.
+3. After a few seconds your browser opens the StakBridge page. If it doesn't, type `http://127.0.0.1:8000` in the browser.
+4. You see **Create your password**, because StakBridge starts with empty data. Choose a password (at least 8 characters), type it twice, and press **Save and sign in**.
 
-**Pass:** the last line reads `29 passed`.
+> Forgot the password later? Close the black window, open a Command Prompt in the StakBridge folder and type `run.bat password`.
 
-- `tests/test_acceptance.py`: one test for each of the 9 acceptance tests (`test_1_...` to `test_9_...`).
-- `tests/test_safety.py`: token check, trading off by default, passwords never returned, paused strategy, and the other rules from section 6.
-- `tests/test_login.py`: web page password, sign in and out, the first password only from this PC, and password reset.
+**Appearance:** at the top right you can pick **System**, **Light** or **Dark**. **System** follows your Windows setting.
 
 ---
 
-## Stage 2: Simulated broker walkthrough
+## Part 4: Add your 3 accounts
 
-The simulated broker behaves like a hedging demo account, but nothing leaves your PC. XAUUSD always fills at 2321.45.
+1. Click the **Accounts** tab.
+2. Click **+ Add account** at the bottom.
+3. Fill in the form for **acct_a**:
 
-### Start
+   | Box | What to type |
+   | --- | --- |
+   | Name | `Master A` |
+   | Account id | `acct_a` |
+   | MT5 login | the login number you wrote down |
+   | Password | that account's password |
+   | Server | the server, exactly as you wrote it down |
+   | Symbol suffix | the suffix from Step 4, or leave it empty |
+   | Terminal path | `C:\Program Files\MetaTrader 5\terminal64.exe` (typing just the folder `C:\Program Files\MetaTrader 5` works too) |
 
-1. Double-click **`run_demo.bat`**. A black window opens. Keep it open, because closing it stops the app.
-2. The browser opens http://127.0.0.1:8000.
-   - **First time:** you see **Create your password**. Type a password of at least 8 characters twice and press **Save and sign in**.
-   - **After that:** you see **Sign in**. The browser stays signed in for 30 days, even after a restart.
+4. Press **Add account**.
+5. Do the same for the other two:
+   - **acct_b**: Name `Client B`, Terminal path `C:\Program Files\STARTRADER Financial MetaTrader 5\terminal64.exe`
+   - **acct_c**: Name `Client C`, Terminal path `C:\Program Files\MetaTrader 5 - C\terminal64.exe`
+6. Wait up to a minute. Each account's **Status** turns into a green dot with **Connected**, and its balance appears.
+7. Each account has a **Trading** button showing **OFF**. Click it on all 3 so it turns green **ON**. Accounts always start OFF for safety.
 
-> The demo and the real app have **separate passwords**, because they keep separate data. Forgot one? Run `run.bat password fake` for the demo, or `run.bat password` for the real app.
+**If an account doesn't show Connected:**
 
-> The demo stores its data in `data_fake\`, separate from real accounts. To start the demo over, close the window and delete `data_fake\`.
-
-### Set up (same as the spec's example)
-
-1. **Accounts** tab, **+ Add account**. Add three accounts. In demo mode, any password and server will do.
-
-   | Name | Account id | MT5 login | Symbol suffix |
-   | --- | --- | --- | --- |
-   | Acct A | acct_a | 5012345 | |
-   | Acct B | acct_b | 5012346 | .m |
-   | Acct C | acct_c | 7788120 | |
-
-2. Wait a few seconds until all three show a green **Connected** dot.
-3. Click each **OFF** button so it turns green **ON**. New accounts always start OFF.
-4. **Strategies** tab. Create `gold_scalper` with max lots `1`, then `swing_eur` with max lots `2`.
-5. Select **gold_scalper** and tick **Acct A** and **Acct B**. Select **swing_eur** and tick **Acct B** and **Acct C**.
-
-### Sending a trade
-
-On the **Trades** tab, open **Send a trade request**. The preset buttons fill in the JSON:
-
-- **Open market**: buy 0.01 XAUUSD for the selected strategy, with a fresh `requestId`.
-- **Open limit**: a pending buy limit far below the price.
-- **Close strategy**: closes everything that strategy opened.
-
-You can edit the JSON before you press **Send**. The response appears below with its HTTP code, and the trade's per-account results open in the table above.
-
-> **Important:** clicking a preset creates a new `requestId`. Pressing **Send** again *without* a new preset resends the same id on purpose. That is acceptance test 5.
-
-To check positions, go to the **Accounts** tab and click **Positions** on an account.
-
-### The 9 acceptance tests
-
-| # | Do this | Pass when |
+| You see | What it means | What to do |
 | --- | --- | --- |
-| 1 | Look at the Accounts tab | All three show **Connected** |
-| 2 | Trades tab: select `gold_scalper` (Strategies tab), then **Open market** and **Send** | HTTP 200. Results list **only** acct_a and acct_b, both `filled`. **Positions** shows the trade on A and B (B as `XAUUSD.m`). Acct C has nothing. |
-| 3 | Change `"strategy"` to `"nope"` and send | HTTP 400 `UNKNOWN_STRATEGY`. No new positions anywhere. Then delete the whole `"strategy"` line and send: HTTP 400 `BAD_PAYLOAD`. |
-| 4 | Accounts tab: click **Disable** on Acct B. Then send a new **Open market** for gold_scalper | Acct A `filled`, Acct B `skipped` with reason `DISCONNECTED`. Click **Enable** afterwards. |
-| 5 | Send a new **Open market**, then press **Send** again without changing anything | Second response has `"replayed": true` and the same tickets. Positions grows by one only. Now change `"volume"` to `0.02` and send again: HTTP 409 `REQUEST_ID_REUSED`. |
-| 6 | New **Open market**, set `"volume": 5` | HTTP 400 `VOLUME_TOO_LARGE`. Nothing placed. |
-| 7 | Press **Stop all** (top right). Send a new **Open market** | HTTP 409 `KILL_SWITCH_ON`, nothing placed. The header shows **Trading stopped**. Then press **Close strategy** and send: it still works. Press **Resume trading** at the end. |
-| 8 | Strategies tab: untick Acct A on `gold_scalper`, tick Acct C. Send a new **Open market** | Results list acct_b and acct_c only |
-| 9 | Make sure gold_scalper and swing_eur both have open positions on Acct B (send one trade to each; for swing_eur set `"symbol": "EURUSD"`). Then select gold_scalper and send **Close strategy** | Acct B shows `closed` with `closedPositions` ≥ 1. **Positions** on Acct B still shows the `EURUSD.m` swing_eur position. |
-
-### Extra checks
-
-- **Pause a strategy:** on the Strategies tab, click **Active** to make it **Paused**, then send an open. Expect HTTP 409 `STRATEGY_PAUSED`. A close still works.
-- **Trading switch:** turn an account's Trading **OFF** and send. That account shows `skipped`, `TRADING_OFF`.
-- **No accounts on a tag:** create a strategy with no ticked accounts and send to it. Expect HTTP 409 `NO_ELIGIBLE_ACCOUNT`.
-- **Sign out and in:** click **Sign out** (top right). Type a wrong password: you see "Wrong password". Type the right one: you are back in.
-- **Password reset:** close the window, run `run.bat password fake`, and choose a new password. Start `run_demo.bat` again. The old password no longer works and the new one does.
-- **Restart:** close the window and start `run_demo.bat` again. Accounts, strategies, trade history and the Stop all state are all still there. Positions are not, because the simulated broker forgets them on restart. Real MT5 keeps them.
+| `LOGIN_FAILED` | Wrong login, password or server, or the program at that Terminal path is logged into a different account | Click **Edit** on the account and check each box |
+| `TERMINAL_PATH_INVALID` | There's no MetaTrader program at the Terminal path | Click **Edit** and use the path from the table at the top of this guide |
+| `TERMINAL_NOT_STARTED` | StakBridge couldn't start that MetaTrader | Double-click that MetaTrader yourself. If it opens, log in, then wait: StakBridge retries every 10 seconds. If it doesn't open, reinstall it. |
+| `TERMINAL_NOT_REACHED` | That MetaTrader is open but not answering | Close that MetaTrader. StakBridge starts it again within about 10 seconds. |
+| `NETTING_NOT_SUPPORTED` | It's not a hedging account | Open a different demo account |
+| `LIVE_ACCOUNT_BLOCKED` | It's a real-money account | Use a demo account |
+| `ALGO_TRADING_OFF_IN_TERMINAL` | Algo Trading is off in that program | Click **Algo Trading** in MetaTrader so it turns green |
+| `Connecting` for a long time | MetaTrader is still starting | Wait 1 minute. Check the program's connection in its bottom-right corner. |
 
 ---
 
-## Stage 3: Real MT5 demo accounts
+## Part 5: Set up the copier
 
-### Prepare (one time)
+1. Click the **Copier** tab.
+2. Under **Master account**, choose **Master A (acct_a)**.
+3. Under **Client accounts**, tick **Client B** and **Client C**.
+4. In the **Lot multiplier** box, leave Client B at `1` and change Client C to `2`. Client C will then always trade twice the master's size.
+5. **Only if a client's broker uses a different name** (from Part 2, Step 4), set up symbol mapping for that client:
+   1. In that client's row, click **Map symbols**.
+   2. Click **+ Add symbol**.
+   3. Left box (**Master symbol**): the name exactly as acct_a's program shows it, for example `XAUUSD`.
+   4. Right box: the name exactly as **this client's** program shows it, for example `GOLD`.
+   5. Repeat for each symbol whose name is different. Click **Hide** when you're done.
 
-1. **Three demo accounts.** They must be **hedging** accounts. Most brokers' standard MT5 demos are. A netting account shows `NETTING_NOT_SUPPORTED` and is refused on purpose.
-2. **One terminal folder per account.** MT5 can only be logged into one account at a time, so each account needs its own copy:
-   ```
-   C:\MT5\acct_a\   <- copy of the whole "C:\Program Files\MetaTrader 5" folder
-   C:\MT5\acct_b\
-   C:\MT5\acct_c\
-   ```
-3. **Log in once by hand** in each copy (run its `terminal64.exe`, File > Login to Trade Account). Note the **server name exactly** as the login window shows it, for example `MetaQuotes-Demo`.
-4. In each terminal, turn on **Algo Trading** (the toolbar button turns green). If you skip this, StakBridge shows `ALGO_TRADING_OFF_IN_TERMINAL` and the broker rejects orders.
-5. Check the broker's gold symbol name in Market Watch. If it is `XAUUSD.m`, set the account's **Symbol suffix** to `.m`. If the broker calls gold something else entirely, such as `GOLD`, use that name as `"symbol"` in your test requests.
+   Example: master acct_a calls gold `XAUUSD`, but Client C's broker calls it `GOLD`. On Client C's row, add `XAUUSD` → `GOLD`. Now a gold trade on the master opens `GOLD` on Client C.
 
-### Start
+   > You don't need a mapping when only the suffix differs (`XAUUSD` vs `XAUUSD.m`). The **Symbol suffix** from Part 4 already handles that. A mapping, when you add one, is used instead of the suffix for that symbol.
 
-Double-click **`run.bat`**. This is real MT5 mode, with data in `data\`. Create the web page password on first start, the same way as in Stage 2.
+6. Press **Save changes**.
+7. Click the **OFF** button next to "Trade copier" so it turns green **ON**.
+8. Under the title you should now see a green dot and **Watching acct_a**.
 
-Add each account with its real **login, password, server** and the **Terminal path**, for example `C:\MT5\acct_a\terminal64.exe`. StakBridge starts the terminal itself if it is not running.
-
-> Live (real money) accounts are refused with `LIVE_ACCOUNT_BLOCKED`. That is the spec's "demo only" rule.
-
-### Run the 9 tests
-
-Use the same table as Stage 2, with these differences:
-
-- **Use 0.01 lots.** The presets already do.
-- **Check in MT5 as well.** In each terminal, open the **Toolbox > Trade** tab. The order comment is the `requestId` (for example `test-20261014...`), so you can match orders to requests.
-- **Test 4:** **Disable** is the reliable way. If you close a terminal instead, StakBridge restarts it within about 10 seconds, so send the trade straight after closing it.
-- **Test 9:** the swing_eur position must be on an account that also has gold_scalper (Acct B in the setup).
-- **Prices and fills are real.** A trade can be `rejected` for a broker reason, for example the market is closed at the weekend. Rejected is the correct result in that case. Run the tests while the market is open.
-
-### Send a trade from outside the UI
-
-This is how a real signal source calls StakBridge. Programs don't use the web page password. They use an **API token**:
-
-1. Create a token: open a Command Prompt in the project folder and run `run.bat token`. Copy the `sb_...` value it prints, because it is shown only once. You can create one token per program.
-2. Send a trade in PowerShell:
-
-```powershell
-$token = "sb_your_token_here"
-$body = @{
-  requestId = "ps-0001"; strategy = "gold_scalper"; action = "open"
-  symbol = "XAUUSD"; side = "buy"; type = "market"; volume = 0.01
-} | ConvertTo-Json
-
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/trade `
-  -Headers @{ Authorization = "Bearer $token" } -ContentType "application/json" `
-  -Body $body -SkipHttpErrorCheck -StatusCodeVariable code
-"HTTP $code"
-```
-
-Close everything for the strategy:
-
-```powershell
-$body = @{ requestId = "ps-0002"; strategy = "gold_scalper"; action = "close" } | ConvertTo-Json
-```
-
-### Measure the timeout (spec section 3)
-
-The spec says to set the trade timeout from real measurements. While testing:
-
-1. Send 10 market trades to a tag with all 3 accounts.
-2. Note how long each response takes. PowerShell: `Measure-Command { Invoke-RestMethod ... }`.
-3. Set `STAKBRIDGE_TRADE_TIMEOUT` to about 3 times the slowest one, with a minimum of 5 seconds, before starting `run.bat`:
-   ```bat
-   set STAKBRIDGE_TRADE_TIMEOUT=6
-   run.bat
-   ```
-   An account that does not answer in time is shown as `unknown` and is **never** resent. When its late answer arrives, the result updates itself and shows `lateReply` in the detail column.
+> Trades that were already open on acct_a before this point are **not** copied. Only new trades are.
 
 ---
 
-## What the statuses mean
+## Part 6: Test the copier
 
-**Account status (Accounts tab)**
+In each test, you trade in the **acct_a MetaTrader program** (`C:\Program Files\MetaTrader 5`) just as you normally would. Then you check the client programs and the StakBridge **Copier** tab.
 
-| Status | Meaning | What to do |
+**Useful MetaTrader actions**
+- **New trade:** press **F9** (New Order), choose the symbol, type the volume, and click **Buy by Market** or **Sell by Market**.
+- **See open trades:** press **Ctrl+T** to open the Toolbox, then the **Trade** tab.
+- **Change SL/TP:** in the Trade tab, right-click the trade → **Modify or Delete**, change Stop Loss or Take Profit, and click **Modify**.
+- **Close a trade:** in the Trade tab, click the small **X** at the end of the trade's row.
+
+### C1: Opening is copied
+
+**Do:** in acct_a, buy **0.01** lots of gold. Set a **Stop Loss** about 20 dollars below the price and a **Take Profit** about 20 dollars above it.
+
+**You should see:**
+- **acct_b program** (Trade tab): a new buy of **0.01** lots, with the same SL and TP.
+- **acct_c program:** a new buy of **0.02** lots (×2), with the same SL and TP.
+- Each copy's **Comment** says `copy` followed by the master's ticket number.
+- StakBridge **Copier** tab: two rows with status **open**.
+
+### C2: SL/TP changes are copied
+
+**Do:** in acct_a, change the Stop Loss of that trade to a new price.
+
+**You should see:** within a second, the copies in acct_b and acct_c show the same new Stop Loss.
+
+### C3: Closing is copied
+
+**Do:** in acct_a, close the trade (the **X**).
+
+**You should see:** the copies disappear from the acct_b and acct_c programs. In the Copier tab both rows say **closed**, and the **Close** column shows how long it took.
+
+### C4: Sell trades work too
+
+**Do:** in acct_a, **sell** 0.01 gold. Wait for the copies. Then close it.
+
+**You should see:** a 0.01 sell in acct_b and a 0.02 sell in acct_c, and both close when you close the master.
+
+### C5: Your own trades on a client are left alone
+
+**Do:**
+1. In the **acct_b** program, open a trade yourself, for example buy 0.01 EURUSD.
+2. In acct_a, buy 0.01 gold, wait for the copies, then close it.
+
+**You should see:** the gold copy on acct_b closes, but **your own EURUSD trade stays open**. Close it yourself afterwards.
+
+### C6: Switching the copier off
+
+**Do:**
+1. In the Copier tab, click **ON** so it turns **OFF**.
+2. In acct_a, buy 0.01 gold.
+
+**You should see:** nothing is copied. The Copier tab shows the two rows as **skipped** with reason `COPIER_PAUSED`.
+
+3. Close that trade on acct_a. Click **OFF** so it turns **ON** again.
+
+> Good to know: while the copier is OFF, new trades aren't copied, but **closes and SL/TP changes still are**. That way you can always get your clients out of a trade.
+
+### C7: A client that goes offline
+
+**Do:**
+1. In acct_a, buy 0.01 gold and wait for the copies.
+2. In StakBridge, **Accounts** tab: click **Disable** on **Client C**.
+3. In acct_a, close the trade.
+
+**You should see:** the copy on acct_b closes at once. The copy on acct_c **stays open**, and the Copier tab shows `CLOSE_WAITING: DISCONNECTED`.
+
+4. Click **Enable** on Client C and wait until it shows **Connected**.
+
+**You should see:** the acct_c copy closes by itself within a few seconds.
+
+### C8: Two trades quickly
+
+**Do:** in acct_a, buy 0.01 gold, and immediately (within a second or two) buy another 0.01 gold. Then close both.
+
+**You should see:** two copies on each client, and both close when you close them on the master.
+
+### C9: Symbol mapping (only if you set one up in Part 5)
+
+**Do:** in acct_a, buy 0.01 of the symbol you mapped, for example `XAUUSD`. Then close it.
+
+**You should see:** the client with the mapping opens the **mapped name**, for example `GOLD`. The other client opens the usual name. Both close when you close the master. In the Copier tab, the **Symbol** column shows the name each client used.
+
+> **Practice it even if all your brokers use the same name:** on Client B's row, map `XAUUSD` to the name Client B already uses, for example `XAUUSD.m`. The trade copies normally. Then change the right box to a name that doesn't exist, like `NOTREAL`. A new copy is then **rejected** with `UNKNOWN_SYMBOL`, which proves the mapping is used. Put the right name back and press **Save changes**.
+
+---
+
+## Part 7: Check the speed
+
+In the **Copier** tab, look at the boxes above the table:
+
+- **Copy open:** how long it took from the moment StakBridge saw your master trade until the client's broker confirmed the copy. It shows the median (the typical time) and the max (the slowest).
+- **Copy close:** the same, for closing.
+- **broker:** the part of that time spent waiting for the broker's server.
+
+**What's normal:**
+- StakBridge's own part (the total minus "broker") should be a few milliseconds.
+- The **broker** part is usually **30 to 300 ms**. It depends on how far the broker's server is from your PC. StakBridge can't make it faster.
+- **Goal:** everything under **1000 ms** (1 second). Write down your numbers in the checklist at the end.
+
+> Want it faster? Run StakBridge and MetaTrader on a VPS (a rented server) in the same city as the broker's servers. The broker part then drops to a few milliseconds.
+
+---
+
+## Part 8 (optional): Strategy trading tests
+
+These test the other half of StakBridge: a program sends a trade to StakBridge, and StakBridge places it on the accounts linked to a **strategy**.
+
+**Before you start:** go to the **Copier** tab and switch the copier **OFF**. Otherwise anything placed on acct_a here would also be copied, which makes the results confusing. Switch it back ON afterwards.
+
+**Set up:**
+1. **Strategies** tab. In the box at the bottom left, type `gold_scalper`, max lots `1`, and press **+ New strategy**. Do the same for `swing_eur` with max lots `2`.
+2. Click **gold_scalper** and tick **Master A** and **Client B**. Click **swing_eur** and tick **Client B** and **Client C**.
+
+**How to send a trade:** **Trades** tab → open **Send a trade request**. The buttons fill in the request for you:
+- **Open market:** buys 0.01 gold for the strategy selected in the Strategies tab.
+- **Close strategy:** closes everything that strategy opened.
+
+Press **Send**. The answer appears below. Each click on a button creates a new request id, and pressing **Send** twice without clicking a button sends the same request again (that's test 5).
+
+| # | Do this | It works if |
 | --- | --- | --- |
-| Connected | Logged in and talking to the broker | Nothing |
-| Starting / Connecting | Worker is starting or logging in (MT5 can take up to a minute) | Wait |
-| Disconnected | Terminal or broker connection lost. StakBridge retries every 10 s | Check internet and the terminal |
-| Error `LOGIN_FAILED` | Wrong login, password or server | **Edit** the account |
-| Error `NETTING_NOT_SUPPORTED` | Netting account | Use a hedging demo account |
-| Error `LIVE_ACCOUNT_BLOCKED` | Real-money account | Use a demo account |
-| Connected + `ALGO_TRADING_OFF_IN_TERMINAL` | Algo Trading button is off in MT5 | Turn it on in the terminal |
-| Disabled | You clicked Disable | Click Enable |
+| 1 | Look at the Accounts tab | All 3 show **Connected** |
+| 2 | Select `gold_scalper`, click **Open market**, **Send** | `HTTP 200`. Only acct_a and acct_b get a trade, acct_c gets nothing |
+| 3 | Change `"strategy"` to `"nope"` and **Send** | `HTTP 400` `UNKNOWN_STRATEGY`, no trade anywhere |
+| 4 | Accounts tab: **Disable** Client B. Send a new **Open market** | acct_a filled, acct_b `skipped` `DISCONNECTED`. **Enable** it again afterwards. |
+| 5 | Click **Open market**, **Send**, then **Send** again without clicking anything else | The second answer says `"replayed": true` and **no second trade** is placed |
+| 6 | **Open market**, change `"volume"` to `5`, **Send** | `HTTP 400` `VOLUME_TOO_LARGE`, nothing placed |
+| 7 | Press **Stop all** (top right), then **Open market**, **Send** | `HTTP 409` `KILL_SWITCH_ON`. **Close strategy** still works. Press **Resume trading** afterwards. |
+| 8 | Strategies tab: untick Master A on gold_scalper, tick Client C. **Open market**, **Send** | Only acct_b and acct_c get the trade |
+| 9 | Make sure Client B has a gold_scalper trade **and** a swing_eur trade (for swing_eur, change `"symbol"` to `"EURUSD"`). Select gold_scalper, **Close strategy**, **Send** | On acct_b only the gold_scalper trade closes. The EURUSD trade stays. |
 
-**Trade result per account (Trades tab)**
+In MetaTrader, the **Comment** of each trade is its request id, so you can match trades to requests. Close all test trades when you're done.
+
+---
+
+## If something looks wrong
+
+**Copier tab: what each status means**
 
 | Status | Meaning |
 | --- | --- |
-| filled | Market order executed |
-| placed | Pending (limit or stop) order placed |
-| closed | Close action done. `detail` shows the counts. |
-| rejected | The broker or the account's lot rules refused it. `reason` says why. |
-| skipped | Not sent at all: `DISCONNECTED` or `TRADING_OFF` |
-| unknown | No answer within the timeout. Never resent. Check that terminal. |
+| **open** | Copied. The copy is open on the client. |
+| **closed** | The copy was closed. `ALREADY_CLOSED_ON_CLIENT` means it had already closed by itself, for example its own SL was hit first. |
+| **skipped** | Not copied, on purpose. The reason says why: `COPIER_PAUSED` (copier OFF), `KILL_SWITCH_ON` (Stop all pressed), `TRADING_OFF` (that account's Trading button is OFF), `DISCONNECTED` (that account is offline), `TOO_OLD_AFTER_RESTART` (the master trade was opened while StakBridge was closed, more than 30 seconds earlier). |
+| **rejected** | The client's broker refused it. `VOLUME_BELOW_BROKER_MIN` means master lots × multiplier is smaller than that broker allows. `UNKNOWN_SYMBOL` means that broker doesn't know the name: check the Symbol column, then fix the account's **Symbol suffix** or add a **symbol mapping** (Copier tab → **Map symbols**). |
+| **unknown** | No answer from the client yet. StakBridge never sends it twice. If the answer got lost, it finds the copy on the client by itself. |
+| `CLOSE_WAITING` / `CLOSE_FAILED` | The master closed, but the client copy is still open. StakBridge keeps retrying until it closes. |
+| `OPENED_WITHOUT_SLTP` | The client's broker refused the master's SL/TP, so the copy was opened without them. Set them by hand in that program. |
+| `SLTP_FAILED` | An SL/TP change didn't go through on that client |
 
-## Test record
+**Not copied in this version**
+- Pending orders (Buy Limit, Sell Stop and so on). Only trades that are actually open are copied.
+- Closing **part** of a trade on the master. The client copy closes fully when the master closes fully.
 
-Copy this list and tick each line as it passes.
+**The Log tab**
+Click **Log** at the top to see what happened and when: accounts connecting or disconnecting, connection errors, orders a broker refused, copier problems and settings changes. The newest entries are at the top. Use **Errors only** to see only problems. A red **!** appears on the tab when a new error arrives that you haven't seen yet.
+
+When you ask for help, send a screenshot of the Log tab. It usually shows the cause.
+
+**StakBridge page says "Cannot reach the gateway"**
+The black `run.bat` window was closed. Start `run.bat` again.
+
+**Start completely fresh**
+Close the black window and delete the `data` folder inside the StakBridge folder. Then start `run.bat` again and repeat Parts 3 to 5.
+
+---
+
+## Real-money accounts
+
+StakBridge refuses real-money accounts on purpose (`LIVE_ACCOUNT_BLOCKED`). Only switch this on **after every test above passes on demo accounts**. Open a Command Prompt in the StakBridge folder and start it like this:
+
+```bat
+set STAKBRIDGE_ALLOW_LIVE=1
+run.bat
+```
+
+Start with the smallest lot size and watch the first trades closely.
+
+---
+
+## Practice without MetaTrader (optional)
+
+Double-click **`run_demo.bat`** instead of `run.bat`. It uses a pretend broker: nothing real is traded, gold always costs 2321.45, and any login works. Its data is kept separately in the `data_fake` folder, with its own password. In this mode you can't trade "by hand" on the master, so use the **Trades** tab with a strategy that only has Master A ticked to place master trades.
+
+---
+
+## Checklist
+
+Copy this and tick each line as it passes.
 
 ```
-Stage 1  [ ] 29 automated tests pass
-Stage 2  [ ] 1  [ ] 2  [ ] 3  [ ] 4  [ ] 5  [ ] 6  [ ] 7  [ ] 8  [ ] 9
-Stage 3  [ ] 1  [ ] 2  [ ] 3  [ ] 4  [ ] 5  [ ] 6  [ ] 7  [ ] 8  [ ] 9
-         [ ] timeout measured and set: ____ s
+Part 1   [ ] 48 passed
+Part 4   [ ] all 3 accounts Connected, Trading ON
+Part 5   [ ] Copier shows "Watching acct_a"
+Part 6   [ ] C1  [ ] C2  [ ] C3  [ ] C4  [ ] C5  [ ] C6  [ ] C7  [ ] C8  [ ] C9
+Part 7   Copy open: ____ ms median, ____ ms max (broker ____ ms)
+         Copy close: ____ ms median, ____ ms max (broker ____ ms)
+Part 8   [ ] 1  [ ] 2  [ ] 3  [ ] 4  [ ] 5  [ ] 6  [ ] 7  [ ] 8  [ ] 9   (optional)
 ```

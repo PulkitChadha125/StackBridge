@@ -1,8 +1,8 @@
 """Request bodies accepted by the API. JSON uses camelCase, Python uses snake_case."""
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 from pydantic.alias_generators import to_camel
 
 NAME_PATTERN = r"^[A-Za-z0-9_\-]{1,40}$"
@@ -76,6 +76,22 @@ class StrategyPatch(ApiModel):
 
 class StrategyAccounts(ApiModel):
     account_ids: list[str]
+
+
+Symbol = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=32)]
+
+
+class CopierClient(ApiModel):
+    account_id: str = Field(min_length=1, max_length=40)
+    multiplier: float = Field(gt=0, le=100)
+    # Master symbol -> this client's symbol, for brokers that name a symbol differently (e.g. GOLD -> XAUUSD.m).
+    symbols: dict[Symbol, Symbol] = Field(default_factory=dict, max_length=500)
+
+
+class CopierIn(ApiModel):
+    master_id: str | None = Field(None, min_length=1, max_length=40)
+    active: bool = False
+    clients: list[CopierClient] = []
 
 
 class LoginIn(ApiModel):

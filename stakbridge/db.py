@@ -65,7 +65,50 @@ CREATE TABLE IF NOT EXISTS ui_sessions (
     token_hash TEXT PRIMARY KEY,
     expires_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS copies (
+    master_id       TEXT NOT NULL,
+    master_ticket   INTEGER NOT NULL,
+    client_id       TEXT NOT NULL,
+    symbol          TEXT NOT NULL,
+    side            TEXT NOT NULL,
+    master_volume   REAL NOT NULL,
+    volume          REAL,
+    sl              REAL NOT NULL DEFAULT 0,
+    tp              REAL NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL,
+    reason          TEXT,
+    client_ticket   INTEGER,
+    open_price      REAL,
+    open_ms         REAL,
+    broker_open_ms  REAL,
+    close_price     REAL,
+    close_ms        REAL,
+    broker_close_ms REAL,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    PRIMARY KEY (master_id, master_ticket, client_id)
+);
+CREATE TABLE IF NOT EXISTS app_log (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    at      TEXT NOT NULL,
+    level   TEXT NOT NULL,
+    source  TEXT NOT NULL,
+    account TEXT,
+    message TEXT NOT NULL
+);
 """
+
+LOG_KEEP = 5000  # newest log entries kept; older ones are deleted
+LOG_LEVELS = {"info": ("info", "warning", "error", "critical"), "warning": ("warning", "error", "critical"),
+              "error": ("error", "critical")}
+
+COPY_COLUMNS = (
+    "master_id", "master_ticket", "client_id", "symbol", "side", "master_volume", "volume", "sl", "tp", "status",
+    "reason", "client_ticket", "open_price", "open_ms", "broker_open_ms", "close_price", "close_ms",
+    "broker_close_ms", "created_at",
+)
+# Copies the copier still has to look after: open on the client, or not known yet.
+LIVE_COPY_STATUSES = ("pending", "open", "unknown")
 
 
 def now_iso() -> str:
@@ -127,6 +170,72 @@ class Database:
 
     def set_kill_switch(self, on: bool) -> None:
         self.set_state("kill_switch", "1" if on else "0")
+
+    # ---- copier ----
+
+    def get_copier(self) -> dict:
+        stored = self.get_state("copier")
+        if stored is None:
+            return {"masterId": None, "active": False, "clients": []}
+        return json.loads(stored)
+
+    def set_copier(self, config: dict) -> None:
+        self.set_state("copier", json.dumps(config, sort_keys=True))
+
+    def get_seen_tickets(self, master_id: str) -> set[int] | None:
+        """Master tickets open at the last check, or None if this master was never watched."""
+        stored = self.get_state(f"copier_seen:{master_id}")
+        return None if stored is None else set(json.loads(stored))
+
+    def set_seen_tickets(self, master_id: str, tickets) -> None:
+        self.set_state(f"copier_seen:{master_id}", json.dumps(sorted(tickets)))
+
+    def save_copy(self, row: dict) -> None:
+        """Inserts or updates one copy (one master position on one client)."""
+        placeholders = ", ".join("?" for _ in COPY_COLUMNS)
+        updates = ", ".join(f"{c} = excluded.{c}" for c in COPY_COLUMNS if c != "created_at")
+        with self._connect() as conn:
+            conn.execute(
+                f"INSERT INTO copies ({', '.join(COPY_COLUMNS)}, updated_at) VALUES ({placeholders}, ?) "
+                f"ON CONFLICT(master_id, master_ticket, client_id) DO UPDATE SET {updates}, updated_at = excluded.updated_at",
+                (*(row.get(c) for c in COPY_COLUMNS), now_iso()),
+            )
+
+    def live_copies(self, master_id: str) -> list[dict]:
+        marks = ", ".join("?" for _ in LIVE_COPY_STATUSES)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM copies WHERE master_id = ? AND status IN ({marks})", (master_id, *LIVE_COPY_STATUSES)
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_copies(self, limit: int = 200) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM copies ORDER BY created_at DESC, client_id LIMIT ?", (limit,)).fetchall()
+        return [dict(row) for row in rows]
+
+    # ---- app log ----
+
+    def add_log(self, level: str, source: str, account: str | None, message: str) -> None:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "INSERT INTO app_log (at, level, source, account, message) VALUES (?, ?, ?, ?, ?)",
+                (now_iso(), level, source, account, message),
+            )
+            conn.execute("DELETE FROM app_log WHERE id <= ?", (cursor.lastrowid - LOG_KEEP,))
+
+    def list_logs(self, limit: int = 200, level: str = "info") -> list[dict]:
+        levels = LOG_LEVELS.get(level, LOG_LEVELS["info"])
+        marks = ", ".join("?" for _ in levels)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM app_log WHERE level IN ({marks}) ORDER BY id DESC LIMIT ?", (*levels, limit)
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def clear_logs(self) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM app_log")
 
     # ---- web UI sessions ----
 

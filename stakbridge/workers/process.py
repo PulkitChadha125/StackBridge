@@ -4,9 +4,14 @@ MT5's Python bridge can only drive one terminal per process, which is why each a
 gets its own worker. Commands arrive over a pipe from the gateway, and replies and
 status events go back the same way.
 
-Messages from the gateway:  {"id": int, "cmd": "open"|"close"|"positions"|"set_offline"|"shutdown", ...}
+Messages from the gateway:  {"id": int, "cmd": "open"|"close"|"positions"|"close_position"|"modify_position"
+                                            |"watch"|"set_offline"|"shutdown", ...}
 Replies to the gateway:     {"id": int, "result": {...}}
 Status events:              {"event": "status", "status": ..., "reason": ..., "info": {...}}
+Position events (copier master only, while watching: config["watch_ms"] or the "watch" command):
+                            {"event": "positions", "kind": "baseline", "positions": [...], "at": perf_counter seconds}
+                            {"event": "positions", "kind": "diff", "opened": [...], "closed": [...],
+                             "modified": [...], "at": perf_counter seconds}
 """
 
 import time
@@ -22,6 +27,8 @@ def worker_main(conn, config: dict) -> None:
     state = {"status": None, "reason": None, "info": None}
     next_check = 0.0
     last_connect_attempt = -RECONNECT_DELAY
+    watch_interval = config["watch_ms"] / 1000 if config.get("watch_ms") else None
+    known = None  # positions last reported to the gateway; None until a baseline was sent
 
     def publish(snapshot: dict) -> None:
         if (snapshot["status"], snapshot["reason"], snapshot["info"]) != (state["status"], state["reason"], state["info"]):
@@ -40,19 +47,58 @@ def worker_main(conn, config: dict) -> None:
                 publish(snapshot)
                 next_check = now + config["status_interval"]
 
-            if not conn.poll(0.2):
-                continue
-            message = conn.recv()
-            if message["cmd"] == "shutdown":
-                break
-            result = _run(backend, message, state["status"])
-            conn.send({"id": message["id"], "result": result})
-            if message["cmd"] == "set_offline":
-                next_check = 0.0
+            watching = watch_interval is not None and state["status"] == "connected"
+            if not watching:
+                known = None  # after a reconnect the gateway gets a fresh baseline
+
+            # On Windows a pipe poll with a timeout waits at least ~15 ms, while time.sleep is
+            # precise to about 1 ms. So the watcher checks the pipe without waiting and sleeps instead.
+            if conn.poll(0 if watching else 0.2):
+                message = conn.recv()
+                if message["cmd"] == "shutdown":
+                    break
+                if message["cmd"] == "watch":
+                    watch_interval = message["watch_ms"] / 1000 if message["watch_ms"] else None
+                    known = None
+                    conn.send({"id": message["id"], "result": {"status": "ok"}})
+                    continue
+                result = _run(backend, message, state["status"])
+                conn.send({"id": message["id"], "result": result})
+                if message["cmd"] == "set_offline":
+                    next_check = 0.0
+
+            if watching:
+                known = _watch(backend, conn, known)
+                time.sleep(watch_interval)
     except (EOFError, BrokenPipeError, KeyboardInterrupt):
         pass  # gateway went away
     finally:
         backend.shutdown()
+
+
+def _watch(backend, conn, known: dict | None) -> dict | None:
+    """Compares the open positions with the last ones reported and sends what changed."""
+    current = backend.snapshot(with_age=known is None)
+    if current is None:
+        return known  # could not read them: never treat that as "everything closed"
+    if known is None:
+        conn.send({"event": "positions", "kind": "baseline", "positions": list(current.values()), "at": time.perf_counter()})
+        return current
+
+    detected = time.perf_counter()
+    if any(ticket not in current for ticket in known):
+        # A close makes every client close too, so read once more to be sure it is real.
+        current = backend.snapshot()
+        if current is None:
+            return known
+    opened = [p for ticket, p in current.items() if ticket not in known]
+    closed = [p for ticket, p in known.items() if ticket not in current]
+    modified = [p for ticket, p in current.items()
+                if ticket in known and (p["sl"], p["tp"]) != (known[ticket]["sl"], known[ticket]["tp"])]
+    if opened or closed or modified:
+        conn.send({"event": "positions", "kind": "diff", "opened": opened, "closed": closed, "modified": modified,
+                   "at": detected})
+    return current
 
 
 def _run(backend, message: dict, status: str | None) -> dict:
@@ -72,6 +118,10 @@ def _run(backend, message: dict, status: str | None) -> dict:
             return backend.close(message["magic"], message.get("symbol"))
         if cmd == "positions":
             return backend.positions(message.get("magic"))
+        if cmd == "close_position":
+            return backend.close_position(message["ticket"])
+        if cmd == "modify_position":
+            return backend.modify_position(message["ticket"], message["sl"], message["tp"])
         return {"status": "rejected", "reason": f"UNKNOWN_COMMAND: {cmd}"}
     except Exception as exc:  # never let one bad order kill the worker
         traceback.print_exc()
