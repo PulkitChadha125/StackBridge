@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Admin Created{% endblock %}
+{% block content %}
+<div class="card card-narrow">
+    <h2>{{ "Password Reset" if info.get('is_reset') else "Admin Created Successfully" }}</h2>
+    <p class="muted section-note">
+        Copy these details now - the temporary password will not be shown again.
+        Send the Admin <code>StakBridge.exe</code> plus these credentials.
+    </p>
+    <table class="data-table">
+        <tbody>
+            <tr><th>Username</th><td><code>{{ info.username }}</code></td></tr>
+            <tr><th>Temporary Password</th><td><code>{{ info.temp_password }}</code></td></tr>
+            <tr><th>License Expiry</th><td>{{ info.expiry_date }}</td></tr>
+            <tr><th>Allowed Installations</th><td>{{ info.allowed_installations }}</td></tr>
+            <tr><th>Max Client Accounts</th><td>{{ info.max_client_accounts if info.max_client_accounts is not none else "Unlimited" }}</td></tr>
+        </tbody>
+    </table>
+    <p><a href="{{ url_for('superadmin_web.admin_detail', admin_id=info.admin_id) }}">Continue to Admin detail</a></p>
+</div>
+{% endblock %}

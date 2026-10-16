@@ -16,6 +16,8 @@
   --bad-bg: #fdecec;
   --ok-bg: #e8f6ee;
   --shadow: rgba(0, 0, 0, .12);
+  --logo-on-dark: none;
+  --logo-on-light: block;
 }
 /* Dark: either chosen in the header, or "System" while the operating system is dark. */
 @media (prefers-color-scheme: dark) {
@@ -37,6 +39,8 @@
   --bad-bg: #3a1e20;
   --ok-bg: #15301f;
   --shadow: rgba(0, 0, 0, .5);
+  --logo-on-dark: block;
+  --logo-on-light: none;
   }
 }
 :root[data-theme="dark"] {
@@ -57,6 +61,8 @@
   --bad-bg: #3a1e20;
   --ok-bg: #15301f;
   --shadow: rgba(0, 0, 0, .5);
+  --logo-on-dark: block;
+  --logo-on-light: none;
 }
 
 * { box-sizing: border-box; }
@@ -65,7 +71,12 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 sys
 code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
 
 header { display: flex; align-items: center; gap: 24px; padding: 0 20px; height: 52px; background: var(--surface); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 1; }
-.brand { font-weight: 700; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; white-space: nowrap; }
+.brand-logo { height: 16px; width: auto; }
+/* White logo on dark backgrounds, dark logo on light ones */
+.brand-logo.on-dark { display: var(--logo-on-dark); }
+.brand-logo.on-light { display: var(--logo-on-light); }
+.brand-divider { width: 1px; height: 18px; background: var(--line); }
 nav { display: flex; gap: 4px; }
 nav button { background: none; border: none; padding: 16px 12px; cursor: pointer; color: var(--muted); font: inherit; border-bottom: 2px solid transparent; }
 nav button.active { color: var(--text); border-bottom-color: var(--accent); }
@@ -81,6 +92,8 @@ button.link { border: none; background: none; color: var(--muted); padding: 4px;
 button.small { padding: 2px 8px; font-size: 13px; }
 button.toggle { min-width: 52px; font-weight: 600; }
 button.toggle.on { background: var(--ok); border-color: var(--ok); color: var(--on-accent); }
+button.toggle.off { background: var(--bad-bg); border-color: var(--bad); color: var(--bad); }
+button.toggle.busy { min-width: 76px; color: var(--muted); }
 button:disabled { opacity: .55; cursor: default; }
 
 input, select { font: inherit; color: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); width: 100%; }
@@ -106,7 +119,8 @@ tr.detail > td { background: var(--sunken); padding: 10px 12px 14px; }
 
 .status-filled, .status-placed, .status-closed, .status-open { color: var(--ok); font-weight: 600; }
 .status-rejected { color: var(--bad); font-weight: 600; }
-.status-skipped, .status-pending { color: var(--muted); font-weight: 600; }
+.status-skipped, .status-pending, .status-cancelled { color: var(--muted); font-weight: 600; }
+.status-waiting { color: var(--warn); font-weight: 600; }
 .status-unknown { color: var(--warn); font-weight: 600; }
 
 .panel { margin-top: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; }
@@ -116,24 +130,6 @@ tr.detail > td { background: var(--sunken); padding: 10px 12px 14px; }
 .grid-form .wide { grid-column: 1 / -1; }
 .actions { display: flex; align-items: center; gap: 12px; }
 .hint { color: var(--muted); font-size: 13px; }
-
-.split { display: grid; grid-template-columns: 220px 1fr; gap: 16px; }
-.list { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 6px; align-self: start; }
-.list > button { display: block; width: 100%; text-align: left; border: none; background: none; padding: 8px 10px; }
-.list > button.selected { background: var(--selected); color: var(--accent); font-weight: 600; }
-.list form { display: flex; flex-direction: column; gap: 6px; padding: 8px 4px 4px; }
-.list > button + form { border-top: 1px solid var(--line); margin-top: 6px; }
-.card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px 20px; }
-.card h2 { margin: 0 0 4px; font-size: 18px; display: flex; align-items: center; gap: 12px; }
-.card h3 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; margin: 20px 0 8px; }
-.meta { display: flex; gap: 24px; align-items: center; color: var(--muted); flex-wrap: wrap; }
-.meta input { width: 90px; }
-.checks label { display: flex; align-items: center; gap: 10px; padding: 5px 0; }
-.checks input { width: auto; }
-
-textarea { color: inherit; background: var(--surface); width: 100%; margin: 8px 0; padding: 8px; font: 13px/1.4 ui-monospace, Consolas, monospace; border: 1px solid var(--line); border-radius: 6px; resize: vertical; }
-pre { background: var(--sunken); border: 1px solid var(--line); border-radius: 6px; padding: 10px; overflow-x: auto; font-size: 13px; margin: 10px 0 0; }
-.presets { display: flex; gap: 6px; flex-wrap: wrap; }
 
 /* Floating notice: it must never push the tables down, or the next click lands on the wrong row. */
 .message { position: fixed; top: 64px; right: 20px; z-index: 10; max-width: min(460px, calc(100vw - 40px)); margin: 0;
@@ -149,7 +145,9 @@ pre { background: var(--sunken); border: 1px solid var(--line); border-radius: 6
 
 /* Appearance switch in the header */
 .theme-switch { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
-.theme-switch button { border: none; border-radius: 0; padding: 4px 10px; font-size: 12px; background: var(--surface); color: var(--muted); }
+.theme-switch button { border: none; border-radius: 0; padding: 5px 9px; background: var(--surface); color: var(--muted); display: inline-flex; align-items: center; }
+.theme-switch button:hover { color: var(--text); }
+.theme-switch svg { display: block; }
 .theme-switch button + button { border-left: 1px solid var(--line); }
 .theme-switch button.active { background: var(--selected); color: var(--accent); font-weight: 600; }
 
@@ -186,10 +184,138 @@ nav .count { display: inline-block; min-width: 16px; padding: 0 4px; margin-left
 td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
 h3.section { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; margin: 4px 0 -4px; }
 
+/* Accounts tab: master on top, clients below */
+.accounts { display: flex; flex-direction: column; gap: 22px; }
+.accounts .role { display: flex; flex-direction: column; gap: 8px; }
+.accounts .role .hint { margin: 0; }
+.accounts h3.section { margin: 0; display: flex; align-items: center; gap: 4px; }
+.master-role table, .master-role .empty { border: 1px solid var(--accent); box-shadow: inset 4px 0 0 var(--accent); }
+/* Same column widths in the master and client tables, so they line up */
+.accounts .role > table { table-layout: fixed; }
+.accounts .role > table th:nth-child(1) { width: 15%; }
+.accounts .role > table th:nth-child(2) { width: 14%; }
+.accounts .role > table th:nth-child(3) { width: 11%; }
+.accounts .role > table th:nth-child(4) { width: 11%; }
+.accounts .role > table th:nth-child(5) { width: 11%; }
+.accounts .role > table th:nth-child(6) { width: 9%; }
+.accounts .role > table th:nth-child(7) { width: 8%; }
+.accounts .role > table td { overflow-wrap: anywhere; }
+.accounts .row-actions { white-space: normal; }
+.accounts .row-actions button { margin: 0 4px 4px 0; }
+.accounts .row-actions button + button { margin-left: 0; }
+.badge.on { background: var(--ok-bg); color: var(--ok); }
+.badge.off { background: var(--sunken); color: var(--muted); border: 1px solid var(--line); }
+
+/* Live account check */
+.check { border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; background: var(--surface); display: flex; flex-direction: column; gap: 8px; }
+.check + table, .check + p { margin-top: 10px; }
+.check.ok { border-color: var(--ok); }
+.check.warn { border-color: var(--warn); }
+.check.bad { border-color: var(--bad); background: var(--bad-bg); }
+.check-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.check-head .row-actions { display: flex; align-items: center; gap: 4px; }
+.check-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px 16px; }
+.check-grid .label { color: var(--muted); font-size: 12px; }
+.check-grid .value { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.pl-up { color: var(--ok); font-weight: 600; }
+.pl-down { color: var(--bad); font-weight: 600; }
+
+/* Trades tab */
+.order-detail { display: flex; flex-direction: column; gap: 6px; }
+.order-detail h4 { margin: 10px 0 2px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+.order-detail h4:first-child { margin-top: 0; }
+.order-grid .value { font-size: 14px; }
+.history { margin: 0; padding-left: 18px; }
+.history li { padding: 1px 0; }
+td.reason { min-width: 180px; }
+
+/* Shown on every tab while Stop all is on */
+.stop-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  margin-bottom: 16px; padding: 12px 16px; border: 1px solid var(--bad); border-radius: 8px; background: var(--bad-bg); color: var(--bad); }
+.stop-bar .sub { color: var(--bad); opacity: .85; }
+
+/* Pop-up */
+.modal { position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, .45); display: flex; align-items: flex-start;
+  justify-content: center; padding: 40px 16px; overflow-y: auto; }
+.modal-box { position: relative; width: min(1000px, 100%); background: var(--surface); border: 1px solid var(--line);
+  border-radius: 10px; padding: 18px 22px 20px; box-shadow: 0 12px 40px var(--shadow); }
+.modal-box h2 { margin: 0 32px 4px 0; font-size: 18px; }
+.modal-close { position: absolute; top: 10px; right: 12px; border: none; background: none; font-size: 22px; line-height: 1;
+  padding: 4px 8px; color: var(--muted); }
+.modal-close:hover { color: var(--text); }
+.result-ok { color: var(--ok); font-weight: 600; }
+.result-bad { color: var(--bad); font-weight: 600; }
+.result-skip { color: var(--muted); font-weight: 600; }
+.result-wait { color: var(--warn); font-weight: 600; }
+
 @media (max-width: 700px) {
   header { flex-wrap: wrap; height: auto; padding: 8px 16px; gap: 8px; }
   main { padding: 16px; }
-  .split, .grid-form { grid-template-columns: 1fr; }
+  .grid-form { grid-template-columns: 1fr; }
+  .modal { padding: 16px; }
+  .modal-box { padding: 16px; }
   table { display: block; overflow-x: auto; }
   .copier select { min-width: 0; width: 100%; }
+}
+
+/* Licence */
+.licence-badge { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.licence-badge.bad { color: var(--bad); font-weight: 600; }
+.licence-badge.warn { color: var(--warn); font-weight: 600; }
+.client-limit { margin: -4px 0 10px; font-size: 13px; color: var(--muted); }
+.client-limit.full { color: var(--warn); font-weight: 600; }
+.limit-box { max-width: 460px; }
+.limit-box h2 { margin-top: 0; }
+.limit-contacts { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+a.button { display: inline-block; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; text-decoration: none; color: inherit; }
+.auth-card #pc-cancel[hidden] { display: none; }
+.auth-card .error.good { color: var(--muted); }
+
+/* Add / edit account pop-up */
+.add-account { margin-top: 16px; }
+.account-box { width: min(720px, 100%); }
+.account-box .grid-form { margin-top: 12px; }
+
+/* ---------- Motion: small and quick. Nothing inside the live tables uses keyframes, because they are
+   redrawn every second; those only get hover transitions. Switched off when Windows asks for less motion. ---------- */
+body, header, table, .empty, .panel, .stat, .check, .auth-card, .modal-box, input, select {
+  transition: background-color .25s ease, border-color .25s ease, color .25s ease;
+}
+button, a.button {
+  transition: background-color .18s ease, border-color .18s ease, color .18s ease, box-shadow .18s ease, transform .12s ease, opacity .18s ease;
+}
+button:not(:disabled):not(.link):not(.modal-close):hover { box-shadow: 0 2px 8px var(--shadow); transform: translateY(-1px); }
+button:not(:disabled):active { transform: translateY(0) scale(.97); box-shadow: none; }
+.theme-switch button:hover, nav button:hover { transform: none; box-shadow: none; }
+nav button { transition: color .18s ease, border-color .25s ease; }
+nav button:hover { color: var(--text); }
+input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+input, select { transition: border-color .18s ease, box-shadow .18s ease, background-color .25s ease; }
+td { transition: background-color .15s ease; }
+tbody tr:hover > td { background: var(--hover); }
+tr.detail:hover > td { background: var(--sunken); }
+
+@keyframes sb-fade-up { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes sb-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes sb-pop { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes sb-slide-in { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: none; } }
+@keyframes sb-drop { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+
+#view.tab-enter { animation: sb-fade-up .28s ease both; }   /* added by app.js when the tab changes */
+.auth-card { animation: sb-pop .3s ease both; }
+.modal { animation: sb-fade .18s ease both; }
+.modal-box { animation: sb-pop .24s cubic-bezier(.2, .8, .3, 1) both; }
+.message { animation: sb-slide-in .25s ease both; }
+.stop-bar { animation: sb-drop .25s ease both; }
+.licence-badge, #kill-banner { animation: sb-fade .3s ease both; }
+.add-account { animation: sb-fade .3s ease both; }
+
+/* Windows "Animation effects" off: keep the gentle fades and colour changes, drop all movement. */
+@media (prefers-reduced-motion: reduce) {
+  @keyframes sb-fade-up { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes sb-pop { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes sb-slide-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes sb-drop { from { opacity: 0; } to { opacity: 1; } }
+  button:not(:disabled):not(.link):not(.modal-close):hover, button:not(:disabled):active { transform: none; }
 }

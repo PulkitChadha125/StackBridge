@@ -2,8 +2,11 @@
 fastapi>=0.110          # REST API and serving the web UI
 uvicorn>=0.29           # web server that runs the FastAPI app
 pydantic>=2.6           # request/response validation (installed with FastAPI, pinned here for clarity)
-cryptography>=42        # encrypts broker passwords in the database
+cryptography>=42        # encrypts broker passwords in the database; checks the signed offline licence
+requests>=2.31          # talks to the licence server
 MetaTrader5>=5.0.45; sys_platform == "win32"   # official MT5 Python bridge (Windows only)
+pywin32; sys_platform == "win32"               # keeps the licence sign-in encrypted for this Windows user (DPAPI)
+pywebview>=5; sys_platform == "win32"          # the desktop window of StakBridge.exe
 
 # Testing
 pytest>=8.0

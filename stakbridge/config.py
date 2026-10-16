@@ -17,12 +17,10 @@ class Settings:
     data_dir: Path
     # "mt5" talks to real MetaTrader 5 terminals, "fake" simulates them (tests, UI work without MT5).
     backend: str = "mt5"
-    # Seconds the gateway waits for all accounts to answer a trade before reporting UNKNOWN.
+    # Seconds to wait for a terminal's answer to an order before showing it as UNKNOWN.
     trade_timeout: float = 10.0
-    # Max POST /v1/trade calls per token per minute.
-    trade_rate_limit: int = 120
-    # Seconds between connection checks inside each worker.
-    status_interval: float = 3.0
+    # Seconds between connection checks inside each worker. Balance, equity and open P/L are read then too.
+    status_interval: float = 1.0
     # Max price slippage in points for market orders.
     deviation_points: int = 20
     # Live (real money) accounts are refused unless this is switched on.
@@ -48,8 +46,7 @@ def load_settings(**overrides) -> Settings:
         data_dir=Path(os.environ.get("STAKBRIDGE_DATA_DIR", Path.cwd() / "data")),
         backend=os.environ.get("STAKBRIDGE_BACKEND", "mt5"),
         trade_timeout=float(os.environ.get("STAKBRIDGE_TRADE_TIMEOUT", "10")),
-        trade_rate_limit=int(os.environ.get("STAKBRIDGE_TRADE_RATE_LIMIT", "120")),
-        status_interval=float(os.environ.get("STAKBRIDGE_STATUS_INTERVAL", "3")),
+        status_interval=float(os.environ.get("STAKBRIDGE_STATUS_INTERVAL", "1")),
         deviation_points=int(os.environ.get("STAKBRIDGE_DEVIATION_POINTS", "20")),
         allow_live=_flag("STAKBRIDGE_ALLOW_LIVE"),
         copy_poll_ms=float(os.environ.get("STAKBRIDGE_COPY_POLL_MS", "2")),

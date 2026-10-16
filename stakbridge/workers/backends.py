@@ -5,14 +5,23 @@ account in memory so the whole app can be run and tested without MT5.
 
 Every method returns plain dicts so results can travel over a multiprocessing pipe:
     connect()/check() -> {"status": "connected"|"disconnected"|"error", "reason": str|None, "info": {...}}
+                         info: balance, equity, profit (open P/L), currency, algoTrading, terminalPath
     open(order)       -> {"status": "filled"|"placed"|"rejected", "reason", "ticket", "price", "volume"}
     close(magic, sym) -> {"status": "closed"|"rejected", "reason", "detail": {...}}
     positions(magic)  -> {"status": "ok", "positions": [...], "orders": [...]}
 
+Used by the live account check:
+    account_info()            -> {"status": "ok", "balance", "equity", "freeMargin", "pingMs", ...} read live
+
 Used by the copier:
-    snapshot(with_age)          -> {ticket: {...}} of all open positions, or None if they could not be read
+    snapshot(with_age)          -> {ticket: {...}} of all open positions and waiting limit/stop orders
+                                   ("pending": True), or None if they could not be read
     close_position(ticket)      -> {"status": "closed"|"rejected", "reason", "price", "volume", "detail"}
     modify_position(ticket, ..) -> {"status": "modified"|"rejected", "reason"}
+    modify_order(ticket, ..)    -> {"status": "modified"|"filled"|"rejected", "reason"}   a waiting order
+    cancel_order(ticket)        -> {"status": "cancelled"|"filled"|"rejected", "reason"}
+    fill_order(ticket, order)   -> {"status": "filled"|"rejected", "reason", "ticket", "price", ...}
+    "filled" from the last three means the waiting order has become a position (its details are given).
 Order results carry "elapsedMs": how long the broker took to answer order_send.
 """
 
@@ -50,8 +59,9 @@ _CONNECT_ERRORS = {
 
 
 def normalize_terminal_path(path: str) -> str:
-    """Cleans a Terminal path as people paste it: drops quotes, and adds terminal64.exe to a folder."""
-    path = (path or "").strip().strip('"').strip()
+    """Cleans a Terminal path as people paste it: drops quotes and a full stop at the end, and adds
+    terminal64.exe to a folder."""
+    path = (path or "").strip().strip('"').strip().rstrip(".").strip().strip('"')
     if path and os.path.isdir(path):
         path = os.path.join(path, TERMINAL_EXE)
     return path
@@ -132,13 +142,21 @@ class Mt5Backend:
             self.mt5.shutdown()
             self.initialized = False
             return {"status": "disconnected", "reason": "TERMINAL_LOST", "info": {}}
+        if account.login != int(self.config["login"]):
+            # Someone (or another account's worker) logged this MetaTrader into a different account.
+            # Never trade then: the order would land on the wrong account.
+            return {"status": "error", "reason": f"WRONG_ACCOUNT_IN_TERMINAL: this MetaTrader is now logged into "
+                    f"{account.login}. Two accounts probably share one MetaTrader: give each account its own "
+                    f"Terminal path", "info": {}}
         if not terminal.connected:
             return {"status": "disconnected", "reason": "NO_BROKER_CONNECTION", "info": {}}
         info = {
             "balance": account.balance,
             "equity": account.equity,
+            "profit": account.profit,
             "currency": account.currency,
             "algoTrading": bool(terminal.trade_allowed),
+            "terminalPath": os.path.join(terminal.path, TERMINAL_EXE) if terminal.path else "",
         }
         reason = None if terminal.trade_allowed else "ALGO_TRADING_OFF_IN_TERMINAL"
         return {"status": "connected", "reason": reason, "info": info}
@@ -147,6 +165,26 @@ class Mt5Backend:
         if self.initialized:
             self.mt5.shutdown()
             self.initialized = False
+
+    def account_info(self) -> dict:
+        """Asks the terminal for the account's numbers right now (the "Check" in the UI)."""
+        terminal = self.mt5.terminal_info()
+        account = self.mt5.account_info()
+        if terminal is None or account is None:
+            code, message = self.mt5.last_error()
+            return {"status": "rejected", "reason": f"NO_ANSWER_FROM_TERMINAL: {code} {message}"}
+        positions = self.mt5.positions_total()
+        return {
+            "status": "ok", "login": account.login, "name": account.name, "server": account.server,
+            "company": account.company, "currency": account.currency, "balance": account.balance,
+            "equity": account.equity, "profit": account.profit, "margin": account.margin,
+            "freeMargin": account.margin_free, "marginLevel": account.margin_level, "leverage": account.leverage,
+            "openPositions": positions if positions is not None else None,
+            "demo": account.trade_mode == self.mt5.ACCOUNT_TRADE_MODE_DEMO,
+            "brokerConnected": bool(terminal.connected), "algoTrading": bool(terminal.trade_allowed),
+            "accountTradeAllowed": bool(account.trade_allowed),
+            "pingMs": round(terminal.ping_last / 1000, 1) if terminal.ping_last else None,  # MT5 gives microseconds
+        }
 
     # ---- trading ----
 
@@ -269,15 +307,45 @@ class Mt5Backend:
             return () if code == 1 else None  # 1 = RES_S_OK: the call worked, there is just nothing
         return positions
 
-    def snapshot(self, with_age: bool = False) -> dict | None:
+    def _orders_or_none(self, **filters):
+        """orders_get() that tells "no orders" apart from "could not read them"."""
+        orders = self.mt5.orders_get(**filters)
+        if orders is None:
+            code, _ = self.mt5.last_error()
+            return () if code == 1 else None
+        return orders
+
+    def _pending_kinds(self) -> dict:
+        """MT5 order types the copier copies as waiting orders. Stop-limit orders are not among them:
+        the position they open is copied at market instead."""
         mt5 = self.mt5
+        return {mt5.ORDER_TYPE_BUY_LIMIT: ("buy", "limit"), mt5.ORDER_TYPE_SELL_LIMIT: ("sell", "limit"),
+                mt5.ORDER_TYPE_BUY_STOP: ("buy", "stop"), mt5.ORDER_TYPE_SELL_STOP: ("sell", "stop")}
+
+    def snapshot(self, with_age: bool = False) -> dict | None:
+        """Open positions and waiting limit/stop orders. A filled order turns into a position with the
+        same ticket. Orders are read first: an order filling in between then shows up twice (the
+        position wins) rather than not at all."""
+        mt5 = self.mt5
+        orders = self._orders_or_none()
         positions = self._positions_or_none()
-        if positions is None:
+        if orders is None or positions is None:
             return None
+        kinds = self._pending_kinds()
         snapshot = {}
+        for o in orders:
+            if o.type not in kinds:
+                continue
+            side, kind = kinds[o.type]
+            item = {"ticket": o.ticket, "symbol": o.symbol, "side": side, "volume": o.volume_current,
+                    "price": o.price_open, "sl": o.sl, "tp": o.tp, "magic": o.magic, "pending": True, "type": kind}
+            if with_age:
+                item["ageS"] = None  # a waiting order is copied whatever its age: its price has not been taken yet
+            snapshot[o.ticket] = item
         for p in positions:
             item = {"ticket": p.ticket, "symbol": p.symbol, "side": "buy" if p.type == mt5.POSITION_TYPE_BUY else "sell",
-                    "volume": p.volume, "sl": p.sl, "tp": p.tp, "magic": p.magic}
+                    "volume": p.volume, "price": p.price_open, "sl": p.sl, "tp": p.tp, "magic": p.magic,
+                    "pending": False, "type": "market"}
             if with_age:
                 # Age in broker server time: the last quote of the symbol is the best "now" the terminal has.
                 tick = mt5.symbol_info_tick(p.symbol)
@@ -285,9 +353,94 @@ class Mt5Backend:
             snapshot[p.ticket] = item
         return snapshot
 
+    def _find_position(self, ticket: int, magic: int | None = None, comment: str | None = None):
+        """The position with this ticket, or the one a waiting order with this ticket turned into, or
+        (with magic and comment) a copy opened for it. () if none, None if positions can't be read."""
+        found = self._positions_or_none(ticket=ticket)
+        if found:
+            return found
+        positions = self._positions_or_none()
+        if positions is None:
+            return None
+        return tuple(p for p in positions if p.identifier == ticket
+                     or (comment is not None and p.magic == magic and p.comment == comment))
+
+    @staticmethod
+    def _filled(position, **extra) -> dict:
+        return {"status": "filled", "ticket": position.ticket, "price": position.price_open, "volume": position.volume,
+                "sl": position.sl, "tp": position.tp, **extra}
+
+    def modify_order(self, ticket: int, price: float, sl: float, tp: float) -> dict:
+        """Moves a waiting order's price, SL and TP. If it has filled meanwhile, says so instead."""
+        mt5 = self.mt5
+        found = self._orders_or_none(ticket=ticket)
+        if not found:
+            position = self._find_position(ticket)
+            if position:
+                return self._filled(position[0])
+            return {"status": "rejected", "reason": "ORDER_NOT_FOUND"}
+        order = found[0]
+        info = mt5.symbol_info(order.symbol)
+        digits = info.digits if info is not None else 5
+        started = time.perf_counter()
+        result = mt5.order_send({
+            "action": mt5.TRADE_ACTION_MODIFY,
+            "order": ticket,
+            "symbol": order.symbol,
+            "price": round(price, digits),
+            "sl": round(sl, digits) if sl else 0.0,
+            "tp": round(tp, digits) if tp else 0.0,
+            "type_time": order.type_time,
+            "expiration": order.time_expiration,
+        })
+        elapsed = _ms_since(started)
+        if result is not None and result.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_NO_CHANGES):
+            return {"status": "modified", "elapsedMs": elapsed}
+        return {"status": "rejected", "reason": _retcode_text(mt5, result), "elapsedMs": elapsed}
+
+    def cancel_order(self, ticket: int) -> dict:
+        """Deletes a waiting order. If it has filled meanwhile, says so (the copier then closes it)."""
+        mt5 = self.mt5
+        found = self._orders_or_none(ticket=ticket)
+        if found is None:
+            code, message = mt5.last_error()
+            return {"status": "rejected", "reason": f"CANNOT_READ_ORDERS: {code} {message}"}
+        if found:
+            started = time.perf_counter()
+            result = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": ticket})
+            elapsed = _ms_since(started)
+            if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
+                return {"status": "cancelled", "elapsedMs": elapsed}
+        position = self._find_position(ticket)
+        if position:
+            return self._filled(position[0])
+        if found:
+            return {"status": "rejected", "reason": _retcode_text(mt5, result), "elapsedMs": elapsed}
+        return {"status": "cancelled", "detail": {"alreadyGone": True}}  # deleted by hand or expired
+
+    def fill_order(self, ticket: int, order: dict) -> dict:
+        """The master's waiting order filled: makes sure this account has the position too. Uses the
+        account's own order if it filled already, otherwise deletes it and opens at market."""
+        mt5 = self.mt5
+        position = self._find_position(ticket, order["magic"], order["comment"])
+        if position is None:
+            code, message = mt5.last_error()
+            return {"status": "rejected", "reason": f"CANNOT_READ_POSITIONS: {code} {message}", "orderRemoved": False}
+        if position:
+            return self._filled(position[0], own=True)
+        found = self._orders_or_none(ticket=ticket)
+        if found:
+            result = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": ticket})
+            if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+                position = self._find_position(ticket)  # it may have filled a moment ago
+                if position:
+                    return self._filled(position[0], own=True)
+                return {"status": "rejected", "reason": _retcode_text(mt5, result), "orderRemoved": False}
+        return _open_keeping_trade(self.open, order)
+
     def close_position(self, ticket: int) -> dict:
         mt5 = self.mt5
-        found = self._positions_or_none(ticket=ticket)
+        found = self._find_position(ticket)
         if found is None:
             code, message = mt5.last_error()
             return {"status": "rejected", "reason": f"CANNOT_READ_POSITIONS: {code} {message}"}
@@ -319,7 +472,7 @@ class Mt5Backend:
 
     def modify_position(self, ticket: int, sl: float, tp: float) -> dict:
         mt5 = self.mt5
-        found = self._positions_or_none(ticket=ticket)
+        found = self._find_position(ticket)
         if not found:
             return {"status": "rejected", "reason": "POSITION_NOT_FOUND"}
         position = found[0]
@@ -328,7 +481,7 @@ class Mt5Backend:
         started = time.perf_counter()
         result = mt5.order_send({
             "action": mt5.TRADE_ACTION_SLTP,
-            "position": ticket,
+            "position": position.ticket,
             "symbol": position.symbol,
             "sl": round(sl, digits) if sl else 0.0,
             "tp": round(tp, digits) if tp else 0.0,
@@ -344,6 +497,9 @@ class Mt5Backend:
         positions = [p for p in mt5.positions_get() or () if magic is None or p.magic == magic]
         orders = [o for o in mt5.orders_get() or () if magic is None or o.magic == magic]
         buy_types = {mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_BUY_STOP, mt5.ORDER_TYPE_BUY_STOP_LIMIT}
+        kind_names = {mt5.ORDER_TYPE_BUY_LIMIT: "limit", mt5.ORDER_TYPE_SELL_LIMIT: "limit",
+                      mt5.ORDER_TYPE_BUY_STOP: "stop", mt5.ORDER_TYPE_SELL_STOP: "stop",
+                      mt5.ORDER_TYPE_BUY_STOP_LIMIT: "stop limit", mt5.ORDER_TYPE_SELL_STOP_LIMIT: "stop limit"}
         return {
             "status": "ok",
             "positions": [
@@ -354,10 +510,29 @@ class Mt5Backend:
             ],
             "orders": [
                 {"ticket": o.ticket, "symbol": o.symbol, "side": "buy" if o.type in buy_types else "sell",
-                 "volume": o.volume_current, "price": o.price_open, "magic": o.magic, "comment": o.comment}
+                 "type": kind_names.get(o.type, ""), "volume": o.volume_current, "price": o.price_open,
+                 "sl": o.sl, "tp": o.tp, "magic": o.magic, "comment": o.comment}
                 for o in orders
             ],
         }
+
+
+def _open_keeping_trade(open_fn, order: dict) -> dict:
+    """Opens at market after this account's waiting order was deleted. If the broker refuses the SL/TP,
+    opens without them rather than missing the trade."""
+    result = open_fn({**order, "type": "market"})
+    if result["status"] == "rejected" and (result.get("reason") or "").startswith("BROKER_10016") \
+            and (order.get("sl") or order.get("tp")):
+        refused = result["reason"]
+        result = open_fn({**order, "type": "market", "sl": None, "tp": None})
+        if result["status"] == "filled":
+            result.update(sl=0.0, tp=0.0, stopsRefused=refused)
+    if result["status"] == "filled":
+        result.setdefault("sl", order.get("sl") or 0.0)
+        result.setdefault("tp", order.get("tp") or 0.0)
+    else:
+        result["orderRemoved"] = True
+    return result
 
 
 def _ms_since(started: float) -> float:
@@ -400,11 +575,22 @@ class FakeBackend:
     def check(self) -> dict:
         if self.simulate_offline or not self.connected:
             return {"status": "disconnected", "reason": "SIMULATED_OFFLINE", "info": {}}
+        profit = round(sum(p["profit"] for p in self.positions_by_ticket.values()), 2)
         return {"status": "connected", "reason": None,
-                "info": {"balance": 10000.0, "equity": 10000.0, "currency": "USD", "algoTrading": True}}
+                "info": {"balance": 10000.0, "equity": 10000.0 + profit, "profit": profit, "currency": "USD",
+                         "algoTrading": True, "terminalPath": ""}}
 
     def shutdown(self) -> None:
         self.connected = False
+
+    def account_info(self) -> dict:
+        return {
+            "status": "ok", "login": int(self.config["login"]), "name": "Simulated account",
+            "server": self.config["server"], "company": "Simulated broker", "currency": "USD", "balance": 10000.0,
+            "equity": 10000.0, "profit": 0.0, "margin": 0.0, "freeMargin": 10000.0, "marginLevel": 0.0,
+            "leverage": 100, "openPositions": len(self.positions_by_ticket), "demo": True, "brokerConnected": True,
+            "algoTrading": True, "accountTradeAllowed": True, "pingMs": 0.0,
+        }
 
     def set_offline(self, offline: bool) -> None:
         self.simulate_offline = offline
@@ -422,7 +608,7 @@ class FakeBackend:
             return {"status": "rejected", "reason": error}
         ticket = next(self._tickets)
         record = {
-            "ticket": ticket, "symbol": order["symbol"], "side": order["side"], "volume": volume,
+            "ticket": ticket, "symbol": order["symbol"], "side": order["side"], "type": order["type"], "volume": volume,
             "sl": order.get("sl") or 0.0, "tp": order.get("tp") or 0.0, "profit": 0.0,
             "magic": order["magic"], "comment": (order.get("comment") or "")[:MAX_COMMENT],
         }
@@ -448,12 +634,51 @@ class FakeBackend:
 
     def snapshot(self, with_age: bool = False) -> dict | None:
         snapshot = {}
-        for ticket, p in self.positions_by_ticket.items():
-            item = {k: p[k] for k in ("ticket", "symbol", "side", "volume", "sl", "tp", "magic")}
-            if with_age:
-                item["ageS"] = 0.0
-            snapshot[ticket] = item
+        for pending, records in ((True, self.orders_by_ticket), (False, self.positions_by_ticket)):
+            for ticket, p in records.items():
+                item = {k: p[k] for k in ("ticket", "symbol", "side", "type", "volume", "price", "sl", "tp", "magic")}
+                item["pending"] = pending
+                if with_age:
+                    item["ageS"] = None if pending else 0.0
+                snapshot[ticket] = item
         return snapshot
+
+    def fill_pending(self, ticket: int) -> dict:
+        """Test helper: the price reached this waiting order, so it becomes a position with the same ticket."""
+        order = self.orders_by_ticket.pop(ticket, None)
+        if order is None:
+            return {"status": "rejected", "reason": "ORDER_NOT_FOUND"}
+        self.positions_by_ticket[ticket] = {**order, "type": "market"}
+        return {"status": "filled", "ticket": ticket}
+
+    def _filled(self, position: dict, **extra) -> dict:
+        return {"status": "filled", "ticket": position["ticket"], "price": position["price"],
+                "volume": position["volume"], "sl": position["sl"], "tp": position["tp"], **extra}
+
+    def modify_order(self, ticket: int, price: float, sl: float, tp: float) -> dict:
+        order = self.orders_by_ticket.get(ticket)
+        if order is None:
+            if ticket in self.positions_by_ticket:
+                return self._filled(self.positions_by_ticket[ticket])
+            return {"status": "rejected", "reason": "ORDER_NOT_FOUND"}
+        order.update(price=price, sl=sl or 0.0, tp=tp or 0.0)
+        return {"status": "modified", "elapsedMs": 0.0}
+
+    def cancel_order(self, ticket: int) -> dict:
+        if self.orders_by_ticket.pop(ticket, None) is not None:
+            return {"status": "cancelled", "elapsedMs": 0.0}
+        if ticket in self.positions_by_ticket:
+            return self._filled(self.positions_by_ticket[ticket])
+        return {"status": "cancelled", "detail": {"alreadyGone": True}}
+
+    def fill_order(self, ticket: int, order: dict) -> dict:
+        own = self.positions_by_ticket.get(ticket) or next(
+            (p for p in self.positions_by_ticket.values()
+             if p["magic"] == order["magic"] and p["comment"] == order["comment"][:MAX_COMMENT]), None)
+        if own is not None:
+            return self._filled(own, own=True)
+        self.orders_by_ticket.pop(ticket, None)
+        return _open_keeping_trade(self.open, order)
 
     def close_position(self, ticket: int) -> dict:
         position = self.positions_by_ticket.pop(ticket, None)

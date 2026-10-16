@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Admins{% endblock %}
+{% block content %}
+<div class="section-header">
+    <h2>Admins</h2>
+    <a href="{{ url_for('superadmin_web.create_admin') }}"><button type="button">Create Admin</button></a>
+</div>
+
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Username</th>
+            <th>Email</th>
+            <th>Status</th>
+            <th>Expiry</th>
+            <th>Allowed Installs</th>
+            <th>Clients</th>
+            <th>Created</th>
+            <th>Last Seen</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for admin in admins %}
+        {% set t = telemetry_by_admin.get(admin.id) %}
+        {% set u = usage_by_admin.get(admin.id) %}
+        <tr class="clickable" onclick="window.location='{{ url_for('superadmin_web.admin_detail', admin_id=admin.id) }}'">
+            <td>{{ admin.name }}</td>
+            <td>{{ admin.username }}</td>
+            <td>{{ admin.email or "&mdash;" | safe }}</td>
+            <td><span class="status-badge status-{{ admin.status }}">{{ admin.status }}</span></td>
+            <td>{{ admin.expiry_date }}</td>
+            <td>{{ admin.allowed_installations }}</td>
+            <td title="{{ ('updated ' ~ (u.updated_at | ago)) if u else 'not reported yet' }}">{{ u.total if u else 0 }} / {{ admin.max_client_accounts if admin.max_client_accounts is not none else "Unlimited" }}</td>
+            <td>{{ admin.created_at[:10] }}</td>
+            <td title="{{ t.received_at[:19] if t else '' }}">{{ t.received_at | ago if t else "Never" }}{% if t %} ({{ t.copier_status }}){% endif %}</td>
+        </tr>
+        {% else %}
+        <tr class="empty-row"><td colspan="9">No Admins yet - click "Create Admin" to add your first customer.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<div class="section-header">
+    <h2>Settings</h2>
+</div>
+
+<div class="card">
+    <h3>Server Address</h3>
+    <p class="muted section-note">
+        This is the address compiled into every EXE you build, and it is where each Admin's app
+        calls to check its licence. Set it to the address <strong>Admins' machines</strong> can reach
+        &mdash; not <code>127.0.0.1</code>, unless you are only testing on this PC.
+    </p>
+
+    <form method="post" action="{{ url_for('superadmin_web.settings_page') }}">
+        <label>
+            Public server address
+            <input type="text" name="public_server_url" value="{{ stored_url }}"
+                   placeholder="https://license.yourcompany.com" />
+        </label>
+        <p class="muted section-note">
+            Leave it empty to fall back automatically (see below). Must start with
+            <code>http://</code> or <code>https://</code>.
+        </p>
+        <button type="submit">Save Address</button>
+    </form>
+</div>
+
+<div class="card">
+    <h3>What EXEs Will Be Built With</h3>
+    <p class="muted section-note">
+        Currently: <strong><code>{{ effective_url }}</code></strong>
+    </p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Source</th>
+                <th>Value</th>
+                <th>In use</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Saved on this page</td>
+                <td><code>{{ stored_url or "not set" }}</code></td>
+                <td>{{ "Yes" if stored_url else "&mdash;" | safe }}</td>
+            </tr>
+            <tr>
+                <td><code>PUBLIC_SERVER_URL</code> environment variable</td>
+                <td><code>{{ env_url or "not set" }}</code></td>
+                <td>{{ "Yes" if not stored_url and env_url else "&mdash;" | safe }}</td>
+            </tr>
+            <tr>
+                <td>Address you opened this panel on</td>
+                <td><code>{{ auto_url }}</code></td>
+                <td>{{ "Yes" if not stored_url and not env_url else "&mdash;" | safe }}</td>
+            </tr>
+        </tbody>
+    </table>
+    <p class="muted section-note">
+        The first available source wins. Changing this affects <strong>EXEs built from now on</strong>
+        &mdash; already-delivered EXEs keep calling the address they were built with. If you move your
+        server, change this, rebuild each Admin's EXE, and send the new file.
+    </p>
+</div>
+
+<div class="card">
+    <h3>Expiry Reminder Emails</h3>
+    <p class="muted section-note">
+        Every Admin whose license expires in ~24 hours gets an automatic reminder email (if they have an
+        email address on file). You get a copy at the address below, in addition to whatever address
+        each Admin has set on their own page.
+    </p>
+
+    {% if smtp_configured %}
+    <p class="muted section-note">Sending as <strong><code>{{ smtp_from }}</code></strong> via <code>{{ smtp_host }}</code>.</p>
+    {% else %}
+    <p class="section-note note-error">
+        SMTP is not configured on this server, so no reminder emails can be sent yet. Set the
+        <code>SMTP_HOST</code>, <code>SMTP_USERNAME</code>, and <code>SMTP_PASSWORD</code> environment
+        variables (and restart the server) to enable this.
+    </p>
+    {% endif %}
+
+    <form method="post" action="{{ url_for('superadmin_web.settings_page') }}">
+        <input type="hidden" name="form_name" value="owner_notification_email" />
+        <label>
+            Your notification email
+            <input type="email" name="owner_notification_email" value="{{ stored_owner_email }}"
+                   placeholder="you@example.com" />
+        </label>
+        <p class="muted section-note">
+            Leave empty to fall back to the <code>OWNER_NOTIFICATION_EMAIL</code> environment variable
+            {% if env_owner_email %}(currently <code>{{ env_owner_email }}</code>){% else %}(not set){% endif %}.
+        </p>
+        <button type="submit">Save Notification Email</button>
+    </form>
+    {% if smtp_configured %}
+    <form method="post" action="{{ url_for('superadmin_web.settings_page') }}">
+        <input type="hidden" name="form_name" value="test_email" />
+        <p class="muted section-note">Sends a short test message to your notification email. New trial signups are emailed there too.</p>
+        <button type="submit">Send Test Email</button>
+    </form>
+    {% endif %}
+</div>
+
+<div class="card">
+    <h3>Support Contact</h3>
+    <p class="muted section-note">
+        Shown to Admins in their app when they reach their client account limit, so they can ask you
+        to raise it. Leave a field empty to use the default shown as its placeholder.
+    </p>
+    <form method="post" action="{{ url_for('superadmin_web.settings_page') }}">
+        <input type="hidden" name="form_name" value="support_contact" />
+        <label>
+            Support email
+            <input type="email" name="support_email" value="{{ stored_support_email }}"
+                   placeholder="{{ default_support_email }}" />
+        </label>
+        <label>
+            WhatsApp chat link
+            <input type="text" name="support_whatsapp_url" value="{{ stored_support_whatsapp_url }}"
+                   placeholder="{{ default_support_whatsapp_url }}" />
+        </label>
+        <button type="submit">Save Support Contact</button>
+    </form>
+</div>
+
+<div class="card">
+    <h3>Free Trial Signups</h3>
+    <p class="muted section-note">
+        Public signup page: <code>{{ trial_signup_url }}</code> &mdash; anyone with this link can start a
+        {{ trial_length_days }}-day trial with just their name and email. A new Admin is created for them
+        automatically, you're emailed about it, and they download one shared trial EXE that this server builds
+        and keeps up to date by itself.
+    </p>
+
+    {% if trial_job and trial_job.status in ('queued', 'running') %}
+    <p class="section-note">Trial EXE is building now (takes a few minutes) &mdash; refresh this page to check.</p>
+    {% elif trial_exe_name and trial_exe_current %}
+    <p class="muted section-note">
+        Trial EXE ready: <strong>{{ trial_exe_name }}</strong>
+        {% if trial_build_info.built_at %}(built {{ trial_build_info.built_at[:16].replace('T', ' ') }} UTC){% endif %}.
+    </p>
+    {% elif trial_job and trial_job.status == 'failed' %}
+    <p class="section-note note-error">Last trial EXE build failed: {{ trial_job.message }}</p>
+    {% elif trial_build_problems %}
+    <p class="section-note note-error">
+        This server can't build the trial EXE, so signups are turned away: {{ trial_build_problems[0] }}
+    </p>
+    {% elif trial_exe_name %}
+    <p class="section-note">Trial EXE points at an old server address &mdash; it will rebuild automatically on the next signup.</p>
+    {% else %}
+    <p class="muted section-note">Trial EXE not built yet &mdash; it builds automatically the first time someone opens the signup page.</p>
+    {% endif %}
+
+    <form method="post" action="{{ url_for('superadmin_web.settings_page') }}">
+        <input type="hidden" name="form_name" value="rebuild_trial_exe" />
+        <p class="muted section-note">Rebuild after updating the app on this server, so new trials get the latest version.</p>
+        <button type="submit">Rebuild Trial EXE</button>
+    </form>
+
+    <h3 class="subsection-title">PCs that have used a free trial</h3>
+    <p class="muted section-note">
+        Each PC gets one free trial. If a PC is refused with "This device has already used a free trial"
+        (for example while you are testing), click <strong>Allow new trial</strong> to let it trial again.
+        The trial account it used is not changed. To let an <em>email</em> trial again, delete that trial Admin.
+    </p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Device</th>
+                <th>Used by</th>
+                <th>First used</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for device in trial_devices %}
+            <tr>
+                <td class="truncate-cell" title="{{ device.fingerprint }}">{{ device.fingerprint[:16] }}...</td>
+                <td>
+                    {% if device.admin_id and device.admin_name %}
+                    <a href="{{ url_for('superadmin_web.admin_detail', admin_id=device.admin_id) }}">{{ device.admin_name }}</a>
+                    <span class="muted">{{ device.admin_email or device.admin_username }}</span>
+                    {% else %}
+                    <span class="muted">deleted Admin</span>
+                    {% endif %}
+                </td>
+                <td>{{ device.first_seen_at[:16].replace('T', ' ') }}</td>
+                <td>
+                    <form method="post" action="{{ url_for('superadmin_web.settings_page') }}">
+                        <input type="hidden" name="form_name" value="allow_trial_device" />
+                        <input type="hidden" name="fingerprint" value="{{ device.fingerprint }}" />
+                        <button type="submit" class="btn-secondary">Allow new trial</button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr class="empty-row"><td colspan="4">No PC has used a free trial yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

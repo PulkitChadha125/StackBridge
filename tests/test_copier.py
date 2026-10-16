@@ -1,7 +1,7 @@
 """Trade copier: acct_a is the master, acct_b (x1, suffix .m) and acct_c (x2) are clients.
 
-Trades on the master are made through a strategy that only acct_a receives, which is how
-a person or EA trading the master terminal looks to the copier.
+Trades on the master are placed straight through its worker, which is how a person or EA
+trading the master terminal looks to the copier.
 """
 
 import pytest
@@ -9,10 +9,8 @@ from fastapi.testclient import TestClient
 
 from stakbridge.api import create_app
 from stakbridge.config import load_settings
-from stakbridge.db import Database
-from stakbridge.security import hash_token
 
-from conftest import TOKEN, Bridge, wait_until
+from conftest import Bridge, wait_until
 
 
 @pytest.fixture
@@ -20,7 +18,6 @@ def make_bridge(tmp_path):
     """Starts StakBridge on a data folder. Can be called again to test a restart."""
     settings = load_settings(data_dir=tmp_path, backend="fake", status_interval=0.2, trade_timeout=5.0,
                              copy_retry_interval=0.3)
-    Database(settings.db_path).add_token(hash_token(TOKEN), "tests")
     clients = []
 
     def start():
@@ -41,32 +38,26 @@ def copier(make_bridge):
     b.add_account("acct_b", 5012346, suffix=".m")
     b.add_account("acct_c", 7788120)
     b.wait_connected("acct_a", "acct_b", "acct_c")
-    b.add_strategy("master", max_volume=5, accounts=["acct_a"])
-    b.add_strategy("manual_b", max_volume=5, accounts=["acct_b"])
-    set_copier(b, active=True)
+    set_copier(b)
     wait_until(lambda: b.get("/copier").json()["watching"])
     return b
 
 
-def set_copier(b, active=True, master="acct_a", clients=(("acct_b", 1.0), ("acct_c", 2.0))):
-    res = b.put("/copier", {"masterId": master, "active": active,
+def set_copier(b, master="acct_a", clients=(("acct_b", 1.0), ("acct_c", 2.0))):
+    res = b.put("/copier", {"masterId": master,
                             "clients": [{"accountId": a, "multiplier": m} for a, m in clients]})
     assert res.status_code == 200, res.text
     return res.json()
 
 
-_ids = iter(range(1, 10_000))
-
-
 def master_open(b, **fields):
-    res = b.trade(f"m-{next(_ids)}", strategy="master", **fields)
-    assert res.json()["results"][0]["status"] == "filled", res.text
-    return res.json()["results"][0]["ticket"]
+    return b.open_by_hand("acct_a", **fields)
 
 
 def master_close(b):
-    res = b.post("/trade", {"requestId": f"m-{next(_ids)}", "strategy": "master", "action": "close"})
-    assert res.json()["results"][0]["status"] == "closed", res.text
+    """Closes every position on the master."""
+    for position in b.positions("acct_a"):
+        b.close_by_hand("acct_a", position["ticket"])
 
 
 def copies(b, client_id=None):
@@ -104,14 +95,13 @@ def test_sl_tp_change_on_master_is_copied(copier):
     b = copier
     ticket = master_open(b, sl=2300.0, tp=2350.0)
     wait_until(lambda: len(b.positions("acct_c")) == 1)
-    master = b.client.app.state.workers.get("acct_a")
-    assert master.send("modify_position", ticket=ticket, sl=2310.0, tp=2360.0).result(5)["status"] == "modified"
+    assert b.send("acct_a", "modify_position", ticket=ticket, sl=2310.0, tp=2360.0)["status"] == "modified"
     wait_until(lambda: all((p["sl"], p["tp"]) == (2310.0, 2360.0) for a in ("acct_b", "acct_c") for p in b.positions(a)))
 
 
 def test_manual_client_trades_are_left_alone(copier):
     b = copier
-    b.trade("own-1", strategy="manual_b", volume=0.5)  # the client's own position
+    b.open_by_hand("acct_b", volume=0.5)  # the client's own position
     master_open(b)
     wait_until(lambda: len(b.positions("acct_b")) == 2)
     master_close(b)
@@ -119,30 +109,50 @@ def test_manual_client_trades_are_left_alone(copier):
     assert b.positions("acct_b")[0]["volume"] == 0.5
 
 
-def test_paused_copier_and_kill_switch_block_opens_but_not_closes(copier):
+def test_master_trading_off_and_kill_switch_block_opens_but_not_closes(copier):
     b = copier
     master_open(b)
     wait_until(lambda: len(b.positions("acct_b")) == 1)
 
-    set_copier(b, active=False)
+    b.patch("/accounts/acct_a", {"tradingOn": False})
     master_open(b)
-    wait_until(lambda: sum(r["reason"] == "COPIER_PAUSED" for r in copies(b)) == 2)
+    wait_until(lambda: sum(r["reason"] == "MASTER_TRADING_OFF" for r in copies(b)) == 2)
     assert len(b.positions("acct_b")) == 1
 
     b.post("/kill")
-    set_copier(b, active=True)
+    b.patch("/accounts/acct_a", {"tradingOn": True})
+    master_open(b)
+    wait_until(lambda: sum(r["reason"] == "KILL_SWITCH_ON" for r in copies(b)) == 2)
     master_close(b)  # closing is allowed while stopped
     wait_until(lambda: b.positions("acct_b") == [] and b.positions("acct_c") == [])
     b.delete("/kill")
 
 
-def test_trading_off_client_is_skipped(copier):
+def test_trading_off_client_is_skipped_and_the_others_still_copy(copier):
     b = copier
     b.patch("/accounts/acct_c", {"tradingOn": False})
     master_open(b)
     wait_until(lambda: len(b.positions("acct_b")) == 1)
     wait_until(lambda: copies(b, "acct_c") and copies(b, "acct_c")[0]["reason"] == "TRADING_OFF")
     assert b.positions("acct_c") == []
+
+
+def test_every_account_except_the_master_is_a_client(make_bridge):
+    """No client list needed: a new account copies the master at x1 as soon as its Trading is ON."""
+    b = make_bridge()
+    b.add_account("acct_a", 5012345)
+    b.add_account("acct_b", 5012346)
+    b.wait_connected("acct_a", "acct_b")
+    set_copier(b, clients=())
+    wait_until(lambda: b.get("/copier").json()["watching"])
+    master_open(b, volume=0.3)
+    wait_until(lambda: len(b.positions("acct_b")) == 1)
+    assert b.positions("acct_b")[0]["volume"] == 0.3
+
+    b.add_account("acct_c", 7788120)  # added later
+    b.wait_connected("acct_c")
+    master_open(b, volume=0.2)
+    wait_until(lambda: len(b.positions("acct_c")) == 1 and len(b.positions("acct_b")) == 2)
 
 
 def test_client_offline_at_close_is_closed_when_it_returns(copier):
@@ -167,7 +177,6 @@ def test_positions_open_before_the_copier_started_are_not_copied(make_bridge):
     b.add_account("acct_a", 5012345)
     b.add_account("acct_b", 5012346)
     b.wait_connected("acct_a", "acct_b")
-    b.add_strategy("master", max_volume=5, accounts=["acct_a"])
     master_open(b)
 
     set_copier(b, clients=(("acct_b", 1.0),))
@@ -179,7 +188,7 @@ def test_positions_open_before_the_copier_started_are_not_copied(make_bridge):
 
 
 def test_master_cannot_be_a_client(copier):
-    res = copier.put("/copier", {"masterId": "acct_a", "active": True,
+    res = copier.put("/copier", {"masterId": "acct_a",
                                  "clients": [{"accountId": "acct_a", "multiplier": 1}]})
     assert res.status_code == 400 and res.json()["error"]["code"] == "MASTER_IS_CLIENT"
 
@@ -190,7 +199,7 @@ def test_removing_an_account_drops_it_from_the_copier(copier):
     assert config["masterId"] == "acct_a" and [c["accountId"] for c in config["clients"]] == ["acct_b"]
     copier.delete("/accounts/acct_a")
     config = copier.get("/copier").json()
-    assert config["masterId"] is None and config["active"] is False
+    assert config["masterId"] is None
 
 
 def test_copy_whose_open_answer_was_lost_is_found_and_still_closed(copier):
@@ -215,7 +224,7 @@ def test_copy_whose_open_answer_was_lost_is_found_and_still_closed(copier):
 
 def test_symbol_mapping_per_client_wins_over_the_suffix(copier):
     b = copier
-    res = b.put("/copier", {"masterId": "acct_a", "active": True, "clients": [
+    res = b.put("/copier", {"masterId": "acct_a", "clients": [
         {"accountId": "acct_b", "multiplier": 1, "symbols": {"XAUUSD": "GOLD.pro"}},
         {"accountId": "acct_c", "multiplier": 1, "symbols": {"EURUSD": "EURUSDx"}},
     ]})
@@ -232,7 +241,7 @@ def test_symbol_mapping_per_client_wins_over_the_suffix(copier):
 
 
 def test_symbol_mapping_must_have_both_names(copier):
-    res = copier.put("/copier", {"masterId": "acct_a", "active": True, "clients": [
+    res = copier.put("/copier", {"masterId": "acct_a", "clients": [
         {"accountId": "acct_b", "multiplier": 1, "symbols": {"XAUUSD": "  "}}]})
     assert res.status_code == 400 and res.json()["error"]["code"] == "BAD_PAYLOAD"
 
@@ -254,3 +263,141 @@ def test_copy_is_saved_as_pending_before_the_answer(copier):
         assert {r["status"] for r in copies(b)} == {"pending"} and sent == ["open", "open"]
     finally:
         engine._send = real_send
+
+
+def orders(b):
+    return b.get("/orders").json()["orders"]
+
+
+def test_master_orders_are_logged_with_every_client_result(copier):
+    """Trades tab: one entry per master order, with what happened on each client."""
+    b = copier
+    b.patch("/accounts/acct_c", {"tradingOn": False})
+    ticket = master_open(b, volume=0.1, sl=2300.0, tp=2350.0)
+    wait_until(lambda: len(orders(b)) == 1 and len(orders(b)[0]["copies"]) == 2
+               and all(c["status"] != "pending" for c in orders(b)[0]["copies"]))
+    order = orders(b)[0]
+    assert (order["ticket"], order["masterId"], order["symbol"], order["side"]) == (ticket, "acct_a", "XAUUSD", "buy")
+    assert (order["volume"], order["price"], order["sl"], order["tp"], order["status"]) == (0.1, 2321.45, 2300.0, 2350.0, "open")
+    by_client = {c["clientId"]: c for c in order["copies"]}
+    assert by_client["acct_b"]["status"] == "open" and by_client["acct_b"]["openMs"] is not None
+    assert (by_client["acct_c"]["status"], by_client["acct_c"]["reason"]) == ("skipped", "TRADING_OFF")
+
+    assert b.send("acct_a", "modify_position", ticket=ticket, sl=2310.0, tp=2360.0)["status"] == "modified"
+    wait_until(lambda: orders(b)[0]["sl"] == 2310.0)
+    master_close(b)
+    wait_until(lambda: orders(b)[0]["status"] == "closed")
+    order = orders(b)[0]
+    assert [e["kind"] for e in order["events"]] == ["open", "modify", "close"]
+    assert order["closedAt"] is not None
+    wait_until(lambda: {c["clientId"]: c["status"] for c in orders(b)[0]["copies"]}["acct_b"] == "closed")
+    assert b.get(f"/orders/{ticket}/logs").status_code == 200
+
+
+def test_account_check_reads_the_balance_live(copier):
+    b = copier
+    res = b.get("/accounts/acct_b/check")
+    assert res.status_code == 200, res.text
+    info = res.json()
+    assert (info["balance"], info["currency"], info["brokerConnected"]) == (10000.0, "USD", True)
+    assert info["roundTripMs"] >= 0 and info["checkedAt"]
+
+    b.patch("/accounts/acct_c", {"enabled": False})
+    res = b.get("/accounts/acct_c/check")
+    assert res.status_code == 409 and res.json()["error"]["code"] == "DISCONNECTED"
+
+
+def test_open_pl_is_shown_live(copier):
+    info = next(a for a in copier.get("/accounts").json()["accounts"] if a["id"] == "acct_b")["info"]
+    assert (info["profit"], info["equity"], info["balance"]) == (0.0, 10000.0, 10000.0)
+
+
+def test_open_mt5_needs_a_real_terminal(copier):
+    res = copier.post("/accounts/acct_b/open-terminal")
+    assert res.status_code == 409 and res.json()["error"]["code"] == "SIMULATED_BROKER"
+
+
+# ---- waiting limit / stop orders ----
+
+def waiting_orders(b, account_id):
+    res = b.get(f"/accounts/{account_id}/positions")
+    assert res.status_code == 200, res.text
+    return res.json()["orders"]
+
+
+def master_place(b, side="buy", kind="limit", price=2300.0, volume=0.1, sl=None, tp=None):
+    """Places a waiting order on the master as if by hand. Returns its ticket."""
+    result = b.send("acct_a", "open", order={"symbol": "XAUUSD", "side": side, "type": kind, "price": price,
+                                             "volume": volume, "sl": sl, "tp": tp, "magic": 0, "comment": "hand"})
+    assert result["status"] == "placed", result
+    return result["ticket"]
+
+
+def test_limit_order_is_copied_moved_and_deleted(copier):
+    b = copier
+    ticket = master_place(b, price=2300.0, sl=2290.0, tp=2350.0)
+    wait_until(lambda: len(waiting_orders(b, "acct_b")) == 1 and len(waiting_orders(b, "acct_c")) == 1)
+    order_b, order_c = waiting_orders(b, "acct_b")[0], waiting_orders(b, "acct_c")[0]
+    assert (order_b["symbol"], order_b["side"], order_b["type"], order_b["volume"]) == ("XAUUSD.m", "buy", "limit", 0.1)
+    assert (order_b["price"], order_b["sl"], order_b["tp"]) == (2300.0, 2290.0, 2350.0)
+    assert order_c["volume"] == 0.2 and order_c["comment"] == f"copy {ticket}"
+    assert b.positions("acct_b") == []
+    wait_until(lambda: {c["status"] for c in copies(b)} == {"placed"})
+    assert orders(b)[0]["status"] == "waiting" and orders(b)[0]["orderType"] == "limit"
+
+    assert b.send("acct_a", "modify_order", ticket=ticket, price=2295.0, sl=2285.0, tp=2345.0)["status"] == "modified"
+    wait_until(lambda: all((o["price"], o["sl"], o["tp"]) == (2295.0, 2285.0, 2345.0)
+                           for a in ("acct_b", "acct_c") for o in waiting_orders(b, a)))
+
+    assert b.send("acct_a", "cancel_order", ticket=ticket)["status"] == "cancelled"
+    wait_until(lambda: waiting_orders(b, "acct_b") == [] and waiting_orders(b, "acct_c") == [])
+    wait_until(lambda: {c["status"] for c in copies(b)} == {"cancelled"})
+    wait_until(lambda: orders(b)[0]["status"] == "cancelled")
+    assert [e["kind"] for e in orders(b)[0]["events"]] == ["open", "modify", "cancel"]
+
+
+def test_filled_master_order_gives_every_client_the_position(copier):
+    b = copier
+    ticket = master_place(b, side="sell", kind="stop", price=2310.0, sl=2330.0)
+    wait_until(lambda: len(waiting_orders(b, "acct_b")) == 1 and len(waiting_orders(b, "acct_c")) == 1)
+    own = waiting_orders(b, "acct_b")[0]["ticket"]
+    assert b.send("acct_b", "fill_pending", ticket=own)["status"] == "filled"  # acct_b's broker got there first
+
+    assert b.send("acct_a", "fill_pending", ticket=ticket)["status"] == "filled"
+    wait_until(lambda: len(b.positions("acct_c")) == 1 and waiting_orders(b, "acct_c") == [])
+    assert [p["ticket"] for p in b.positions("acct_b")] == [own]  # its own fill is kept, nothing opened twice
+    pos_c = b.positions("acct_c")[0]
+    assert (pos_c["side"], pos_c["volume"], pos_c["sl"], pos_c["comment"]) == ("sell", 0.2, 2330.0, f"copy {ticket}")
+    wait_until(lambda: {c["status"] for c in copies(b)} == {"open"})
+    wait_until(lambda: orders(b)[0]["status"] == "open")
+    assert copies(b, "acct_c")[0]["openMs"] is not None
+
+    # after the fill it is an ordinary copy: SL/TP and the close are followed
+    assert b.send("acct_a", "modify_position", ticket=ticket, sl=2325.0, tp=2280.0)["status"] == "modified"
+    wait_until(lambda: all((p["sl"], p["tp"]) == (2325.0, 2280.0) for a in ("acct_b", "acct_c") for p in b.positions(a)))
+    master_close(b)
+    wait_until(lambda: b.positions("acct_b") == [] and b.positions("acct_c") == [])
+
+
+def test_stop_all_before_the_fill_withdraws_the_client_orders(copier):
+    b = copier
+    ticket = master_place(b)
+    wait_until(lambda: len(waiting_orders(b, "acct_b")) == 1 and len(waiting_orders(b, "acct_c")) == 1)
+    b.post("/kill")
+    assert b.send("acct_a", "fill_pending", ticket=ticket)["status"] == "filled"
+    wait_until(lambda: waiting_orders(b, "acct_b") == [] and waiting_orders(b, "acct_c") == [])
+    wait_until(lambda: [(c["status"], c["reason"]) for c in copies(b)] == [("cancelled", "KILL_SWITCH_ON")] * 2)
+    assert b.positions("acct_b") == [] and b.positions("acct_c") == []
+    b.delete("/kill")
+
+
+def test_client_that_cannot_take_the_order_does_not_hold_up_the_others(copier):
+    b = copier
+    b.patch("/accounts/acct_c", {"tradingOn": False})
+    ticket = master_place(b)
+    wait_until(lambda: len(waiting_orders(b, "acct_b")) == 1)
+    wait_until(lambda: copies(b, "acct_c") and copies(b, "acct_c")[0]["reason"] == "TRADING_OFF")
+    assert waiting_orders(b, "acct_c") == []
+    assert b.send("acct_a", "fill_pending", ticket=ticket)["status"] == "filled"
+    wait_until(lambda: len(b.positions("acct_b")) == 1)
+    assert b.positions("acct_c") == []

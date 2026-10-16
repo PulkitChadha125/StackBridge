@@ -1,0 +1,433 @@
+{% extends "base.html" %}
+{% block title %}{{ admin.name }}{% endblock %}
+{% block content %}
+<div class="section-header">
+    <h2>{{ admin.name }} <span class="status-badge status-{{ admin.status }}">{{ admin.status }}</span></h2>
+</div>
+
+<div class="card">
+    <h3>Details</h3>
+    <form method="post" action="{{ url_for('superadmin_web.edit_admin', admin_id=admin.id) }}">
+        <label>
+            Name
+            <input type="text" name="name" value="{{ admin.name }}" required />
+        </label>
+        <label>
+            Username
+            <input type="text" value="{{ admin.username }}" disabled />
+        </label>
+        <label>
+            Email
+            <input type="email" name="email" value="{{ admin.email or '' }}" placeholder="admin@example.com" />
+        </label>
+        <label>
+            Expiry Date
+            <input type="date" name="expiry_date" value="{{ admin.expiry_date }}" required />
+        </label>
+        <label>
+            Allowed Installations
+            <input type="number" name="allowed_installations" min="1" value="{{ admin.allowed_installations }}" required />
+        </label>
+        <label>
+            Max Client Accounts
+            <input type="number" name="max_client_accounts" min="1" data-client-limit-input
+                   value="{{ admin.max_client_accounts if admin.max_client_accounts is not none else default_client_limit }}"
+                   {% if admin.max_client_accounts is none %}disabled{% endif %} />
+        </label>
+        <label class="checkbox-row">
+            <input type="checkbox" name="unlimited_client_accounts" value="1" data-client-limit-toggle
+                   {% if admin.max_client_accounts is none %}checked{% endif %} />
+            Unlimited client accounts
+        </label>
+        <p class="muted section-note client-usage-note">
+            Client accounts in use, across all their servers:
+            <strong>{{ usage.total if usage else 0 }} / {{ admin.max_client_accounts if admin.max_client_accounts is not none else "Unlimited" }}</strong>
+            {% if usage %}(last updated by their app {{ usage.updated_at | ago }}){% else %}&mdash; not reported yet{% endif %}
+        </p>
+        <label>
+            Notes
+            <textarea name="notes" rows="3">{{ admin.notes or "" }}</textarea>
+        </label>
+        <button type="submit">Save Changes</button>
+    </form>
+</div>
+
+<div class="card">
+    <h3>Account Actions</h3>
+    <div class="header-actions">
+        {% if admin.status == 'active' %}
+        <form method="post" action="{{ url_for('superadmin_web.revoke_admin', admin_id=admin.id) }}" onsubmit="return confirm('Revoke this Admin? All active sessions will be terminated immediately.');">
+            <button type="submit" class="btn-danger">Revoke Admin</button>
+        </form>
+        {% else %}
+        <form method="post" action="{{ url_for('superadmin_web.reactivate_admin', admin_id=admin.id) }}">
+            <button type="submit" class="btn-success">Reactivate Admin</button>
+        </form>
+        {% endif %}
+        <form method="post" action="{{ url_for('superadmin_web.reset_admin_password', admin_id=admin.id) }}" onsubmit="return confirm('Reset this Admin password? A new temporary password will be generated and all sessions terminated.');">
+            <button type="submit" class="btn-secondary">Reset Password</button>
+        </form>
+        <form method="post" action="{{ url_for('superadmin_web.delete_admin', admin_id=admin.id) }}" onsubmit="return confirm('Permanently delete ' + {{ admin.name|tojson }} + '? This removes their login, devices, and sessions, lets their email/PC take a new trial, and erases their client data from their app the next time it checks in. This cannot be undone.');">
+            <button type="submit" class="btn-danger">Delete Admin</button>
+        </form>
+    </div>
+    <p class="muted section-note">Must change password on next login: <strong>{{ "Yes" if admin.must_change_password else "No" }}</strong></p>
+</div>
+
+<div class="card">
+    <h3>Set Password</h3>
+    <p class="muted section-note">
+        Choose this Admin's new password yourself, for example when they forgot theirs.
+        Their old password stops working and every active session is logged out.
+        (Use <em>Reset Password</em> above to generate a random one instead.)
+    </p>
+    <form method="post" action="{{ url_for('superadmin_web.set_admin_password', admin_id=admin.id) }}"
+          onsubmit="if (this.new_password.value !== this.confirm_password.value) { alert('The two passwords do not match.'); return false; } return confirm('Set this new password for the Admin? All their sessions will be terminated.');">
+        <label>
+            New Password
+            <input type="password" name="new_password" minlength="8" autocomplete="new-password" required />
+        </label>
+        <label>
+            Confirm New Password
+            <input type="password" name="confirm_password" minlength="8" autocomplete="new-password" required />
+        </label>
+        <label class="checkbox-row">
+            <input type="checkbox" name="must_change_password" value="1" checked />
+            Require the Admin to change it on next login
+        </label>
+        <button type="submit">Set Password</button>
+    </form>
+</div>
+
+<div class="card">
+    <h3>Delivery &ndash; Build EXE</h3>
+    {% if build_problems %}
+    <p class="muted">This server cannot build EXEs right now:</p>
+    <ul class="muted">
+        {% for problem in build_problems %}<li>{{ problem }}</li>{% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted section-note">
+        Builds <strong>{{ admin.name }}.exe</strong> with your server address
+        (<code>{{ build_server_url }}</code>) already compiled in, so the Admin just runs it and logs in &mdash;
+        no launcher file and nothing for them to configure. Takes a few minutes.
+        <a href="{{ url_for('superadmin_web.settings_page') }}">Change this address</a>.
+    </p>
+    <div class="header-actions">
+        <button type="button" id="buildExeBtn"
+                data-start-url="{{ url_for('superadmin_web.build_exe', admin_id=admin.id) }}"
+                data-status-url="{{ url_for('superadmin_web.build_exe_status', admin_id=admin.id) }}">
+            Build EXE
+        </button>
+        <a id="downloadExeLink"
+           href="{{ url_for('superadmin_web.download_exe', admin_id=admin.id) }}"
+           class="{% if not existing_exe_name %}hidden{% endif %}">
+            <button type="button" class="btn-success">Download {{ existing_exe_name or 'EXE' }}</button>
+        </a>
+    </div>
+    <p id="buildExeMessage" class="muted section-note"></p>
+    <pre id="buildExeLog" class="build-log hidden"></pre>
+    {% endif %}
+</div>
+
+<div class="card">
+    <h3>Registered Devices ({{ devices|length }} / {{ admin.allowed_installations }} allowed slots)</h3>
+    <p class="muted section-note">Each device is one server running the app. "Clients" is how many client accounts that server holds; revoking a server you no longer use frees its client slots.</p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Fingerprint</th>
+                <th>Status</th>
+                <th>First Seen</th>
+                <th>Last Seen</th>
+                <th>Clients</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for device in devices %}
+            <tr>
+                <td class="truncate-cell" title="{{ device.device_fingerprint }}">{{ device.device_fingerprint[:16] }}...</td>
+                <td><span class="status-badge status-{{ device.status }}">{{ device.status }}</span></td>
+                <td>{{ device.first_seen_at[:19] }}</td>
+                <td>{{ device.last_seen_at[:19] }}</td>
+                {% set du = usage_by_device.get(device.id) %}
+                <td>{{ du.client_count if du else 0 }}{% if device.status != 'active' and du and du.client_count %} <span class="muted">(not counted)</span>{% endif %}</td>
+                <td>
+                    {% if device.status == 'active' %}
+                    <form method="post" action="{{ url_for('superadmin_web.revoke_device', admin_id=admin.id, device_id=device.id) }}">
+                        <button type="submit" class="btn-danger">Revoke</button>
+                    </form>
+                    {% else %}
+                    <form method="post" action="{{ url_for('superadmin_web.reactivate_device', admin_id=admin.id, device_id=device.id) }}">
+                        <button type="submit" class="btn-secondary">Reactivate</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% else %}
+            <tr class="empty-row"><td colspan="6">No devices have logged in yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="card">
+    <h3>App Logs</h3>
+    {% set active_devices = devices | selectattr("status", "equalto", "active") | sort(attribute="last_seen_at", reverse=true) | list %}
+    <p class="muted section-note">
+        Fetch this Admin's App Log from one of their servers, up to {{ log_max_days }} days at a time.
+        Their app must be open and logged in on that server: it checks for requests every 30 seconds and
+        sends the logs, then the file downloads here. Dates are the Admin PC's local dates.
+        Files are kept here for 3 days.
+    </p>
+    {% if active_devices %}
+    <form id="logRequestForm" class="inline-form"
+          data-request-url="{{ url_for('superadmin_web.request_admin_logs', admin_id=admin.id) }}"
+          data-max-days="{{ log_max_days }}">
+        <label>
+            Server
+            <select name="device_id" required>
+                {% for device in active_devices %}
+                <option value="{{ device.id }}">{{ device.device_fingerprint[:16] }}... (last seen {{ device.last_seen_at[:16] | replace("T", " ") }})</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>
+            From
+            <input type="date" name="date_from" value="{{ today }}" max="{{ today }}" required />
+        </label>
+        <label>
+            To
+            <input type="date" name="date_to" value="{{ today }}" required />
+        </label>
+        <button type="submit" id="logRequestBtn">Get Logs</button>
+    </form>
+    <p id="logRequestMessage" class="muted section-note"></p>
+    {% else %}
+    <p class="muted">This Admin has no active server yet - logs can be fetched once their app has logged in.</p>
+    {% endif %}
+    {% if log_requests %}
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Requested</th>
+                <th>Dates</th>
+                <th>Status</th>
+                <th>Details</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in log_requests %}
+            <tr>
+                <td>{{ item.created_at[:16] | replace("T", " ") }} UTC</td>
+                <td>{{ item.date_from }} &ndash; {{ item.date_to }}</td>
+                <td><span class="status-badge status-{{ 'active' if item.status == 'ready' else ('revoked' if item.status in ['failed', 'expired'] else 'pending') }}">{{ item.status | replace("_", " ") }}</span></td>
+                <td>{{ item.message }}</td>
+                <td>
+                    {% if item.downloadable %}
+                    <a href="{{ url_for('superadmin_web.download_admin_logs', admin_id=admin.id, request_id=item.id) }}"><button type="button" class="btn-success">Download</button></a>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</div>
+
+<div class="card">
+    <h3>Telemetry (last check-in)</h3>
+    {% if telemetry %}
+    <p class="muted section-note">
+        Received {{ telemetry.received_at[:19] }} - app version {{ telemetry.app_version or "unknown" }} -
+        copier <strong>{{ telemetry.copier_status }}</strong> -
+        {{ telemetry.client_count }} client(s), {{ telemetry.enabled_client_count }} enabled
+    </p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Symbol</th>
+                <th>Action</th>
+                <th>Side</th>
+                <th>Quantity</th>
+                <th>Status</th>
+                <th>Time</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for trade in telemetry.recent_trades %}
+            <tr>
+                <td>{{ trade.symbol }}</td>
+                <td>{{ trade.action }}</td>
+                <td>{{ trade.side }}</td>
+                <td>{{ trade.quantity }}</td>
+                <td>{{ trade.status }}</td>
+                <td>{{ trade.timestamp }}</td>
+            </tr>
+            {% else %}
+            <tr class="empty-row"><td colspan="6">No recent trades reported.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="muted">This Admin's application has not synced any telemetry yet. Data is pushed periodically by the running app, not pulled on demand.</p>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    const form = document.getElementById("logRequestForm");
+    if (!form) return;
+    const button = document.getElementById("logRequestBtn");
+    const message = document.getElementById("logRequestMessage");
+    const maxDays = Number(form.dataset.maxDays) || 7;
+    let timer = null;
+
+    function finish(text) {
+        message.textContent = text;
+        button.disabled = false;
+        button.textContent = "Get Logs";
+    }
+
+    function poll(statusUrl) {
+        fetch(statusUrl)
+            .then((r) => r.json())
+            .then((item) => {
+                message.textContent = item.message || item.status;
+                if (!item.done) {
+                    timer = setTimeout(() => poll(statusUrl), 3000);
+                    return;
+                }
+                finish(item.message || item.status);
+                if (item.downloadable && item.download_url) {
+                    window.location.href = item.download_url;
+                    // Refresh the list below once the download has started.
+                    setTimeout(() => window.location.reload(), 1500);
+                }
+            })
+            .catch(() => {
+                timer = setTimeout(() => poll(statusUrl), 5000);
+            });
+    }
+
+    form.addEventListener("submit", function (event) {
+        event.preventDefault();
+        const from = form.date_from.value;
+        const to = form.date_to.value;
+        if (!from || !to) {
+            message.textContent = "Pick a From and To date.";
+            return;
+        }
+        const days = Math.round((new Date(to) - new Date(from)) / 86400000) + 1;
+        if (days < 1) {
+            message.textContent = "The From date must be on or before the To date.";
+            return;
+        }
+        if (days > maxDays) {
+            message.textContent = "Pick at most " + maxDays + " days of logs at a time.";
+            return;
+        }
+        button.disabled = true;
+        button.textContent = "Fetching...";
+        message.textContent = "Sending the request...";
+        fetch(form.dataset.requestUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ device_id: form.device_id.value, date_from: from, date_to: to }),
+        })
+            .then((r) => r.json().then((body) => ({ ok: r.ok, body })))
+            .then(({ ok, body }) => {
+                if (!ok) {
+                    finish(body.message || "Could not request the logs.");
+                    return;
+                }
+                if (timer) clearTimeout(timer);
+                message.textContent = body.message;
+                poll(body.status_url);
+            })
+            .catch((err) => finish("Could not request the logs: " + err));
+    });
+})();
+
+(function () {
+    const btn = document.getElementById("buildExeBtn");
+    if (!btn) return;
+
+    const message = document.getElementById("buildExeMessage");
+    const logBox = document.getElementById("buildExeLog");
+    const downloadLink = document.getElementById("downloadExeLink");
+    let pollTimer = null;
+
+    function render(job) {
+        message.textContent = job.message || "";
+        if (job.log && job.log.length) {
+            logBox.classList.remove("hidden");
+            logBox.textContent = job.log.join("\n");
+            logBox.scrollTop = logBox.scrollHeight;
+        }
+        if (job.status === "success") {
+            btn.disabled = false;
+            btn.textContent = "Rebuild EXE";
+            downloadLink.classList.remove("hidden");
+            const label = downloadLink.querySelector("button");
+            if (label && job.exe_name) label.textContent = "Download " + job.exe_name;
+        } else if (job.status === "failed") {
+            btn.disabled = false;
+            btn.textContent = "Build EXE";
+            message.textContent = "Build failed: " + (job.message || "unknown error");
+        }
+    }
+
+    function poll(jobId) {
+        fetch(btn.dataset.statusUrl + "?job_id=" + encodeURIComponent(jobId))
+            .then((r) => r.json())
+            .then((job) => {
+                if (job.status === "none") return;
+                render(job);
+                if (!job.done) {
+                    pollTimer = setTimeout(() => poll(jobId), 2000);
+                }
+            })
+            .catch(() => {
+                pollTimer = setTimeout(() => poll(jobId), 5000);
+            });
+    }
+
+    btn.addEventListener("click", function () {
+        btn.disabled = true;
+        btn.textContent = "Building...";
+        message.textContent = "Starting build. This takes a few minutes - you can leave this page open.";
+        logBox.classList.add("hidden");
+        logBox.textContent = "";
+
+        fetch(btn.dataset.startUrl, { method: "POST" })
+            .then((r) => r.json().then((body) => ({ ok: r.ok, body })))
+            .then(({ ok, body }) => {
+                if (!ok) {
+                    btn.disabled = false;
+                    btn.textContent = "Build EXE";
+                    message.textContent = body.message || "Could not start the build.";
+                    return;
+                }
+                if (pollTimer) clearTimeout(pollTimer);
+                poll(body.id);
+            })
+            .catch((err) => {
+                btn.disabled = false;
+                btn.textContent = "Build EXE";
+                message.textContent = "Could not start the build: " + err;
+            });
+    });
+
+    {% if active_job and not active_job.finished_at %}
+    btn.disabled = true;
+    btn.textContent = "Building...";
+    poll("{{ active_job.id }}");
+    {% endif %}
+})();
+</script>
+{% endblock %}

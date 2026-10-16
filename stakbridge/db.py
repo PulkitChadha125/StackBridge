@@ -1,12 +1,11 @@
 """SQLite storage. One short-lived connection per call keeps it safe across threads."""
 
 import json
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-
-FIRST_MAGIC = 1001
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
@@ -20,42 +19,6 @@ CREATE TABLE IF NOT EXISTS accounts (
     enabled       INTEGER NOT NULL DEFAULT 1,
     trading_on    INTEGER NOT NULL DEFAULT 0,
     created_at    TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS strategies (
-    tag        TEXT PRIMARY KEY,
-    magic      INTEGER NOT NULL UNIQUE,
-    active     INTEGER NOT NULL DEFAULT 1,
-    max_volume REAL NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS account_strategies (
-    account_id   TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    strategy_tag TEXT NOT NULL REFERENCES strategies(tag) ON DELETE CASCADE,
-    PRIMARY KEY (account_id, strategy_tag)
-);
-CREATE TABLE IF NOT EXISTS trade_requests (
-    request_id   TEXT PRIMARY KEY,
-    strategy_tag TEXT NOT NULL,
-    action       TEXT NOT NULL,
-    payload      TEXT NOT NULL,
-    received_at  TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS trade_results (
-    request_id TEXT NOT NULL REFERENCES trade_requests(request_id),
-    account_id TEXT NOT NULL,
-    status     TEXT NOT NULL,
-    reason     TEXT,
-    ticket     INTEGER,
-    price      REAL,
-    volume     REAL,
-    detail     TEXT,
-    updated_at TEXT NOT NULL,
-    PRIMARY KEY (request_id, account_id)
-);
-CREATE TABLE IF NOT EXISTS api_tokens (
-    token_hash TEXT PRIMARY KEY,
-    label      TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS app_state (
     key   TEXT PRIMARY KEY,
@@ -88,6 +51,22 @@ CREATE TABLE IF NOT EXISTS copies (
     updated_at      TEXT NOT NULL,
     PRIMARY KEY (master_id, master_ticket, client_id)
 );
+CREATE TABLE IF NOT EXISTS master_orders (
+    master_id  TEXT NOT NULL,
+    ticket     INTEGER NOT NULL,
+    symbol     TEXT NOT NULL,
+    side       TEXT NOT NULL,
+    volume     REAL NOT NULL,
+    price      REAL,
+    sl         REAL NOT NULL DEFAULT 0,
+    tp         REAL NOT NULL DEFAULT 0,
+    order_type TEXT NOT NULL DEFAULT 'market',
+    status     TEXT NOT NULL,
+    opened_at  TEXT NOT NULL,
+    closed_at  TEXT,
+    events     TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY (master_id, ticket)
+);
 CREATE TABLE IF NOT EXISTS app_log (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
     at      TEXT NOT NULL,
@@ -98,6 +77,9 @@ CREATE TABLE IF NOT EXISTS app_log (
 );
 """
 
+# Tables of the removed strategy-tag trading, dropped from older databases.
+OLD_TABLES = ("account_strategies", "trade_results", "trade_requests", "strategies", "api_tokens")
+
 LOG_KEEP = 5000  # newest log entries kept; older ones are deleted
 LOG_LEVELS = {"info": ("info", "warning", "error", "critical"), "warning": ("warning", "error", "critical"),
               "error": ("error", "critical")}
@@ -107,16 +89,14 @@ COPY_COLUMNS = (
     "reason", "client_ticket", "open_price", "open_ms", "broker_open_ms", "close_price", "close_ms",
     "broker_close_ms", "created_at",
 )
-# Copies the copier still has to look after: open on the client, or not known yet.
-LIVE_COPY_STATUSES = ("pending", "open", "unknown")
+# Copies the copier still has to look after: open or a waiting order on the client, or not known yet.
+LIVE_COPY_STATUSES = ("pending", "placed", "open", "unknown")
+# Master orders still on the master: a waiting limit/stop order, or an open position.
+LIVE_MASTER_STATUSES = ("waiting", "open")
 
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
-
-
-class DuplicateRequest(Exception):
-    """The requestId is already stored."""
 
 
 class Database:
@@ -125,6 +105,11 @@ class Database:
         with self._connect() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(SCHEMA)
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(master_orders)")}
+            if "order_type" not in columns:  # databases from before limit orders were copied
+                conn.execute("ALTER TABLE master_orders ADD COLUMN order_type TEXT NOT NULL DEFAULT 'market'")
+            for table in OLD_TABLES:
+                conn.execute(f"DROP TABLE IF EXISTS {table}")
 
     @contextmanager
     def _connect(self):
@@ -136,20 +121,6 @@ class Database:
                 yield conn
         finally:
             conn.close()
-
-    # ---- api tokens ----
-
-    def add_token(self, token_hash: str, label: str = "") -> None:
-        with self._connect() as conn:
-            conn.execute(
-                "INSERT INTO api_tokens (token_hash, label, created_at) VALUES (?, ?, ?)",
-                (token_hash, label, now_iso()),
-            )
-
-    def token_exists(self, token_hash: str) -> bool:
-        with self._connect() as conn:
-            row = conn.execute("SELECT 1 FROM api_tokens WHERE token_hash = ?", (token_hash,)).fetchone()
-        return row is not None
 
     # ---- app state (kill switch, UI password) ----
 
@@ -176,8 +147,10 @@ class Database:
     def get_copier(self) -> dict:
         stored = self.get_state("copier")
         if stored is None:
-            return {"masterId": None, "active": False, "clients": []}
-        return json.loads(stored)
+            return {"masterId": None, "clients": []}
+        config = json.loads(stored)
+        config.pop("active", None)  # the copier ON/OFF switch was removed: each account's Trading switch decides
+        return config
 
     def set_copier(self, config: dict) -> None:
         self.set_state("copier", json.dumps(config, sort_keys=True))
@@ -213,6 +186,67 @@ class Database:
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM copies ORDER BY created_at DESC, client_id LIMIT ?", (limit,)).fetchall()
         return [dict(row) for row in rows]
+
+    # ---- master orders (the Orders tab) ----
+
+    def master_order_opened(self, master_id: str, position: dict, note: str) -> None:
+        stamp = now_iso()
+        event = {"at": stamp, "kind": "open", "text": note}
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO master_orders (master_id, ticket, symbol, side, volume, price, sl, tp, "
+                "order_type, status, opened_at, events) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (master_id, position["ticket"], position["symbol"], position["side"], position["volume"],
+                 position.get("price"), position["sl"] or 0.0, position["tp"] or 0.0, position.get("type", "market"),
+                 "waiting" if position.get("pending") else "open", stamp, json.dumps([event])),
+            )
+
+    def master_order_changed(self, master_id: str, ticket: int, kind: str, text: str, **values) -> None:
+        """Adds an event ("modify", "fill", "cancel" or "close") to a master order and stores its new values."""
+        stamp = now_iso()
+        with self._connect() as conn:
+            row = conn.execute("SELECT events FROM master_orders WHERE master_id = ? AND ticket = ?",
+                               (master_id, ticket)).fetchone()
+            if row is None:
+                return  # opened before the copier started watching: not in the order log
+            events = json.loads(row["events"]) + [{"at": stamp, "kind": kind, "text": text}]
+            if kind in ("close", "cancel"):
+                values.update(status="closed" if kind == "close" else "cancelled", closed_at=stamp)
+            elif kind == "fill":
+                values["status"] = "open"
+            assignments = "".join(f", {column} = ?" for column in values)
+            conn.execute(f"UPDATE master_orders SET events = ?{assignments} WHERE master_id = ? AND ticket = ?",
+                         (json.dumps(events), *values.values(), master_id, ticket))
+
+    def open_master_tickets(self, master_id: str) -> list[int]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT ticket FROM master_orders WHERE master_id = ? AND status IN (?, ?)",
+                                (master_id, *LIVE_MASTER_STATUSES)).fetchall()
+        return [row["ticket"] for row in rows]
+
+    def list_master_orders(self, limit: int = 200) -> list[dict]:
+        with self._connect() as conn:
+            orders = [dict(row) for row in conn.execute(
+                "SELECT * FROM master_orders ORDER BY opened_at DESC LIMIT ?", (limit,)).fetchall()]
+            copies = conn.execute(
+                "SELECT c.* FROM copies c JOIN (SELECT master_id, ticket FROM master_orders "
+                "ORDER BY opened_at DESC LIMIT ?) o ON c.master_id = o.master_id AND c.master_ticket = o.ticket "
+                "ORDER BY c.client_id", (limit,)).fetchall()
+        by_order: dict[tuple, list[dict]] = {}
+        for row in copies:
+            by_order.setdefault((row["master_id"], row["master_ticket"]), []).append(dict(row))
+        for order in orders:
+            order["events"] = json.loads(order["events"])
+            order["copies"] = by_order.get((order["master_id"], order["ticket"]), [])
+        return orders
+
+    def master_order_logs(self, ticket: int, limit: int = 50) -> list[dict]:
+        """Log entries that mention this master ticket."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM app_log WHERE message LIKE ? ORDER BY id DESC LIMIT ?",
+                                (f"%{ticket}%", limit * 4)).fetchall()
+        pattern = re.compile(rf"(?<!\d){ticket}(?!\d)")
+        return [dict(row) for row in rows if pattern.search(row["message"])][:limit]
 
     # ---- app log ----
 
@@ -267,21 +301,12 @@ class Database:
     def list_accounts(self) -> list[dict]:
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM accounts ORDER BY created_at").fetchall()
-            links = conn.execute("SELECT account_id, strategy_tag FROM account_strategies ORDER BY strategy_tag").fetchall()
-        tags: dict[str, list[str]] = {}
-        for link in links:
-            tags.setdefault(link["account_id"], []).append(link["strategy_tag"])
-        return [_account(row, tags.get(row["id"], [])) for row in rows]
+        return [_account(row) for row in rows]
 
     def get_account(self, account_id: str) -> dict | None:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
-            if row is None:
-                return None
-            links = conn.execute(
-                "SELECT strategy_tag FROM account_strategies WHERE account_id = ? ORDER BY strategy_tag", (account_id,)
-            ).fetchall()
-        return _account(row, [link["strategy_tag"] for link in links])
+        return None if row is None else _account(row)
 
     def insert_account(self, values: dict) -> None:
         with self._connect() as conn:
@@ -307,130 +332,8 @@ class Database:
         with self._connect() as conn:
             conn.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
 
-    # ---- strategies ----
 
-    def list_strategies(self) -> list[dict]:
-        with self._connect() as conn:
-            rows = conn.execute("SELECT * FROM strategies ORDER BY created_at").fetchall()
-            links = conn.execute("SELECT account_id, strategy_tag FROM account_strategies").fetchall()
-        accounts: dict[str, list[str]] = {}
-        for link in links:
-            accounts.setdefault(link["strategy_tag"], []).append(link["account_id"])
-        return [_strategy(row, accounts.get(row["tag"], [])) for row in rows]
-
-    def get_strategy(self, tag: str) -> dict | None:
-        with self._connect() as conn:
-            row = conn.execute("SELECT * FROM strategies WHERE tag = ?", (tag,)).fetchone()
-            if row is None:
-                return None
-            links = conn.execute("SELECT account_id FROM account_strategies WHERE strategy_tag = ?", (tag,)).fetchall()
-        return _strategy(row, [link["account_id"] for link in links])
-
-    def insert_strategy(self, tag: str, max_volume: float, active: bool) -> None:
-        with self._connect() as conn:
-            row = conn.execute("SELECT MAX(magic) AS m FROM strategies").fetchone()
-            magic = max(FIRST_MAGIC, (row["m"] or 0) + 1)
-            conn.execute(
-                "INSERT INTO strategies (tag, magic, active, max_volume, created_at) VALUES (?, ?, ?, ?, ?)",
-                (tag, magic, int(active), max_volume, now_iso()),
-            )
-
-    def update_strategy(self, tag: str, values: dict) -> None:
-        changes = {k: (int(v) if isinstance(v, bool) else v) for k, v in values.items() if k in {"active", "max_volume"}}
-        if not changes:
-            return
-        assignments = ", ".join(f"{column} = ?" for column in changes)
-        with self._connect() as conn:
-            conn.execute(f"UPDATE strategies SET {assignments} WHERE tag = ?", (*changes.values(), tag))
-
-    def set_strategy_accounts(self, tag: str, account_ids: list[str]) -> None:
-        with self._connect() as conn:
-            conn.execute("DELETE FROM account_strategies WHERE strategy_tag = ?", (tag,))
-            conn.executemany(
-                "INSERT INTO account_strategies (account_id, strategy_tag) VALUES (?, ?)",
-                [(account_id, tag) for account_id in dict.fromkeys(account_ids)],
-            )
-
-    # ---- trades ----
-
-    def create_trade_request(self, request_id: str, tag: str, action: str, payload: dict, account_ids: list[str]) -> None:
-        """Stores the request and a 'pending' row per account in one transaction.
-
-        Raises DuplicateRequest if the requestId was stored before, which is what makes a
-        resent request safe: the second one can never reach the workers.
-        """
-        stamp = now_iso()
-        try:
-            with self._connect() as conn:
-                conn.execute(
-                    "INSERT INTO trade_requests (request_id, strategy_tag, action, payload, received_at) VALUES (?, ?, ?, ?, ?)",
-                    (request_id, tag, action, json.dumps(payload, sort_keys=True), stamp),
-                )
-                conn.executemany(
-                    "INSERT INTO trade_results (request_id, account_id, status, updated_at) VALUES (?, ?, 'pending', ?)",
-                    [(request_id, account_id, stamp) for account_id in account_ids],
-                )
-        except sqlite3.IntegrityError as exc:
-            raise DuplicateRequest(request_id) from exc
-
-    def save_result(self, request_id: str, account_id: str, result: dict) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE trade_results SET status = ?, reason = ?, ticket = ?, price = ?, volume = ?, detail = ?, updated_at = ? "
-                "WHERE request_id = ? AND account_id = ?",
-                (
-                    result["status"], result.get("reason"), result.get("ticket"), result.get("price"),
-                    result.get("volume"), json.dumps(result["detail"]) if result.get("detail") else None,
-                    now_iso(), request_id, account_id,
-                ),
-            )
-
-    def get_trade(self, request_id: str) -> dict | None:
-        with self._connect() as conn:
-            req = conn.execute("SELECT * FROM trade_requests WHERE request_id = ?", (request_id,)).fetchone()
-            if req is None:
-                return None
-            rows = conn.execute(
-                "SELECT * FROM trade_results WHERE request_id = ? ORDER BY account_id", (request_id,)
-            ).fetchall()
-        return {
-            "requestId": req["request_id"],
-            "strategy": req["strategy_tag"],
-            "action": req["action"],
-            "payload": json.loads(req["payload"]),
-            "receivedAt": req["received_at"],
-            "results": [_result(row) for row in rows],
-        }
-
-    def list_trades(self, limit: int = 100, strategy: str | None = None) -> list[dict]:
-        where = "WHERE r.strategy_tag = ? " if strategy else ""
-        params = (strategy, limit) if strategy else (limit,)
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT r.request_id, r.strategy_tag, r.action, r.payload, r.received_at, "
-                "SUM(t.status IN ('filled', 'placed', 'closed')) AS ok, COUNT(t.account_id) AS total "
-                "FROM trade_requests r LEFT JOIN trade_results t ON t.request_id = r.request_id "
-                f"{where}GROUP BY r.request_id ORDER BY r.received_at DESC LIMIT ?",
-                params,
-            ).fetchall()
-        trades = []
-        for row in rows:
-            payload = json.loads(row["payload"])
-            trades.append({
-                "requestId": row["request_id"],
-                "strategy": row["strategy_tag"],
-                "action": row["action"],
-                "symbol": payload.get("symbol"),
-                "side": payload.get("side"),
-                "volume": payload.get("volume"),
-                "receivedAt": row["received_at"],
-                "succeeded": row["ok"] or 0,
-                "accounts": row["total"],
-            })
-        return trades
-
-
-def _account(row: sqlite3.Row, strategies: list[str]) -> dict:
+def _account(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
         "name": row["name"],
@@ -441,25 +344,5 @@ def _account(row: sqlite3.Row, strategies: list[str]) -> dict:
         "symbol_suffix": row["symbol_suffix"],
         "enabled": bool(row["enabled"]),
         "trading_on": bool(row["trading_on"]),
-        "strategies": strategies,
     }
 
-
-def _strategy(row: sqlite3.Row, account_ids: list[str]) -> dict:
-    return {
-        "tag": row["tag"],
-        "magic": row["magic"],
-        "active": bool(row["active"]),
-        "max_volume": row["max_volume"],
-        "account_ids": sorted(account_ids),
-    }
-
-
-def _result(row: sqlite3.Row) -> dict:
-    result = {"accountId": row["account_id"], "status": row["status"]}
-    for key, column in (("reason", "reason"), ("ticket", "ticket"), ("price", "price"), ("volume", "volume")):
-        if row[column] is not None:
-            result[key] = row[column]
-    if row["detail"]:
-        result["detail"] = json.loads(row["detail"])
-    return result

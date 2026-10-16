@@ -8,26 +8,39 @@
     // Apply the saved appearance before the page paints, so it never flashes the wrong colours.
     try { const t = localStorage.getItem("stakbridge-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch {}
   </script>
-  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="icon.png">
+  <link rel="stylesheet" href="style.css?v=9">
 </head>
 <body>
   <header>
-    <span class="brand">StakBridge</span>
+    <span class="brand">
+      <img class="brand-logo on-dark" src="thinkstak-logo.png" alt="ThinkStak">
+      <img class="brand-logo on-light" src="thinkstak-logo-dark.png" alt="ThinkStak">
+      <span class="brand-divider" aria-hidden="true"></span>
+      <span>StakBridge</span>
+    </span>
     <nav id="tabs" hidden>
       <button data-tab="accounts" class="active">Accounts</button>
-      <button data-tab="strategies">Strategies</button>
       <button data-tab="trades">Trades</button>
       <button data-tab="copier">Copier</button>
       <button data-tab="log">Log <span id="log-badge" class="count" hidden></span></button>
     </nav>
     <div class="right">
       <div class="theme-switch" role="group" aria-label="Appearance">
-        <button type="button" data-theme-choice="system" title="Follow the system setting">System</button>
-        <button type="button" data-theme-choice="light" title="Always light">Light</button>
-        <button type="button" data-theme-choice="dark" title="Always dark">Dark</button>
+        <button type="button" data-theme-choice="system" title="System: follow the Windows setting" aria-label="System appearance">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
+        </button>
+        <button type="button" data-theme-choice="light" title="Light" aria-label="Light appearance">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        </button>
+        <button type="button" data-theme-choice="dark" title="Dark" aria-label="Dark appearance">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
       </div>
+      <span id="licence-badge" class="licence-badge" hidden></span>
       <span id="kill-banner" hidden>Trading stopped</span>
       <button id="kill-btn" class="danger" hidden>Stop all</button>
+      <button id="password-btn" class="link" hidden>Change password</button>
       <button id="logout-btn" class="link" hidden>Sign out</button>
     </div>
   </header>
@@ -35,12 +48,51 @@
   <main>
     <section id="login" class="auth-card" hidden>
       <h2>Sign in</h2>
+      <p id="login-built-for" class="hint" hidden></p>
       <form id="login-form">
+        <label id="login-username-field" hidden>Username <input id="login-username" autocomplete="username" maxlength="120"></label>
         <label>Password <input id="login-password" type="password" autocomplete="current-password" required></label>
         <button type="submit" class="primary">Sign in</button>
       </form>
       <p id="login-error" class="error"></p>
-      <p class="hint">Forgot it? Run <code>run.bat password</code> on the PC running StakBridge.</p>
+      <p id="login-hint" class="hint">Forgot it? Run <code>run.bat password</code> on the PC running StakBridge.</p>
+      <p id="login-forgot" class="hint" hidden><a href="#" id="forgot-link">Forgot your password?</a></p>
+    </section>
+
+    <section id="password-change" class="auth-card" hidden>
+      <h2>Choose a new password</h2>
+      <p id="password-change-intro" class="hint"></p>
+      <form id="password-change-form">
+        <label>Current password <input id="pc-current" type="password" autocomplete="current-password" required></label>
+        <label>New password (at least 8 characters) <input id="pc-new" type="password" autocomplete="new-password" minlength="8" required></label>
+        <label>Type the new password again <input id="pc-confirm" type="password" autocomplete="new-password" minlength="8" required></label>
+        <button type="submit" class="primary">Save new password</button>
+        <button type="button" id="pc-cancel">Cancel</button>
+      </form>
+      <p id="password-change-error" class="error"></p>
+    </section>
+
+    <section id="forgot" class="auth-card" hidden>
+      <h2>Forgot your password</h2>
+      <form id="forgot-email-form">
+        <p class="hint">Enter the email address your provider has for you. We send a 6-digit code to it.</p>
+        <label>Email <input id="forgot-email" type="email" autocomplete="email" required></label>
+        <button type="submit" class="primary">Send me a code</button>
+      </form>
+      <form id="forgot-code-form" hidden>
+        <p class="hint" id="forgot-code-intro"></p>
+        <label>6-digit code <input id="forgot-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" required></label>
+        <button type="submit" class="primary">Check the code</button>
+        <button type="button" id="forgot-resend">Send a new code</button>
+      </form>
+      <form id="forgot-reset-form" hidden>
+        <p class="hint">Code accepted. Choose your new password.</p>
+        <label>New password (at least 8 characters) <input id="forgot-new" type="password" autocomplete="new-password" minlength="8" required></label>
+        <label>Type it again <input id="forgot-confirm" type="password" autocomplete="new-password" minlength="8" required></label>
+        <button type="submit" class="primary">Save new password</button>
+      </form>
+      <p id="forgot-error" class="error"></p>
+      <p class="hint"><a href="#" id="forgot-back">Back to sign in</a></p>
     </section>
 
     <section id="setup" class="auth-card" hidden>
@@ -61,45 +113,78 @@
     </section>
 
     <div id="app" hidden>
+      <div id="licence-bar" class="stop-bar" role="alert" hidden>
+        <div><b>Your licence is not active: no new trades are copied.</b>
+          <div class="sub" id="licence-bar-text"></div></div>
+        <button type="button" id="licence-bar-check">Check again</button>
+      </div>
+      <div id="stop-bar" class="stop-bar" role="alert" hidden>
+        <div><b>Stop all is ON: no new trades are copied to any account.</b>
+          <div class="sub">Closes on the master are still copied. Press Resume trading to copy new trades again.</div></div>
+        <button type="button" class="primary" id="stop-bar-resume">Resume trading</button>
+      </div>
       <p id="message" class="message" hidden></p>
       <div id="view"></div>
 
-      <details id="add-account" class="panel">
-        <summary id="account-form-title">+ Add account</summary>
-        <form id="account-form" class="grid-form" autocomplete="off">
-          <label>Name <input name="name" maxlength="80" required></label>
-          <label>Account id <input name="id" placeholder="optional, e.g. acct_a" pattern="[A-Za-z0-9_\-]{1,40}" title="Letters, digits, _ and - only"></label>
-          <label>MT5 login <input name="login" type="number" min="1" step="1" required></label>
-          <label>Password <input name="password" type="password" autocomplete="new-password" required></label>
-          <label>Server <input name="server" placeholder="e.g. Broker-Demo" required></label>
-          <label>Symbol suffix <input name="symbolSuffix" maxlength="16" placeholder="e.g. .m (empty if none)"></label>
-          <label class="wide">Terminal path <input name="terminalPath" placeholder="C:\Program Files\MetaTrader 5\terminal64.exe (or just its folder). One MetaTrader per account."></label>
-          <div class="wide actions">
-            <button type="submit" class="primary" id="account-submit">Add account</button>
-            <button type="button" id="account-cancel" hidden>Cancel edit</button>
-            <span class="hint" id="account-hint">Trading starts OFF. Switch it on once the account shows Connected.</span>
-          </div>
-        </form>
-      </details>
+      <button type="button" id="add-account" class="primary add-account">+ Add account</button>
 
-      <details id="send-trade" class="panel" hidden>
-        <summary>Send a trade request</summary>
-        <p class="hint">Sends this JSON to <code>POST /v1/trade</code> exactly as an external signal would. Change <code>requestId</code> for every new trade.</p>
-        <div class="presets">
-          <button type="button" class="small" data-preset="open">Open market</button>
-          <button type="button" class="small" data-preset="limit">Open limit</button>
-          <button type="button" class="small" data-preset="close">Close strategy</button>
-        </div>
-        <textarea id="trade-json" rows="12" spellcheck="false"></textarea>
-        <div class="actions">
-          <button type="button" class="primary" id="trade-send">Send</button>
-          <span class="hint" id="trade-status"></span>
-        </div>
-        <pre id="trade-response" hidden></pre>
-      </details>
     </div>
   </main>
 
-  <script src="app.js"></script>
+  <!-- Pop-up with one copied trade: what happened on each account -->
+  <div id="modal" class="modal" hidden>
+    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <button type="button" class="modal-close" data-close aria-label="Close">×</button>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- Add or edit an account -->
+  <div id="account-modal" class="modal" hidden>
+    <div class="modal-box account-box" role="dialog" aria-modal="true" aria-labelledby="account-form-title">
+      <button type="button" class="modal-close" data-account-close aria-label="Close">×</button>
+      <h2 id="account-form-title">Add account</h2>
+          <form id="account-form" class="grid-form" autocomplete="off">
+            <label class="wide" id="role-field">Role
+              <select name="role">
+                <option value="client">Client account: copies every trade of the master</option>
+                <option value="master">Master account: you trade here, its trades are copied</option>
+              </select>
+            </label>
+            <label class="wide">Name <input name="name" maxlength="80" placeholder="e.g. Client 1" required></label>
+            <label>MT5 login <input name="login" type="number" min="1" step="1" required></label>
+            <label>Password <input name="password" type="password" autocomplete="new-password" required></label>
+            <label>Server <input name="server" placeholder="e.g. Broker-Demo" required></label>
+            <label>Symbol suffix <input name="symbolSuffix" maxlength="16" placeholder="e.g. .m (empty if none)"></label>
+            <label class="wide">Terminal path <input name="terminalPath" placeholder="C:\Program Files\MetaTrader 5\terminal64.exe (or just its folder). One MetaTrader per account."></label>
+            <div class="wide actions">
+              <button type="submit" class="primary" id="account-submit">Add account</button>
+              <button type="button" id="account-cancel">Cancel</button>
+              <span class="hint" id="account-hint">Trading starts OFF. Switch it on once the account shows Connected.</span>
+            </div>
+          </form>
+    </div>
+  </div>
+
+  <!-- Shown when the licence allows no more client accounts -->
+  <div id="limit-modal" class="modal" hidden>
+    <div class="modal-box limit-box" role="dialog" aria-modal="true" aria-labelledby="limit-title">
+      <button type="button" class="modal-close" data-limit-close aria-label="Close">×</button>
+      <h2 id="limit-title">Client account limit reached</h2>
+      <p id="limit-text"></p>
+      <p>To add more client accounts, contact your provider:</p>
+      <p class="limit-contacts"><a id="limit-email" target="_blank" rel="noopener"></a>
+        <a id="limit-whatsapp" class="button" target="_blank" rel="noopener">WhatsApp</a></p>
+      <p class="hint">Removing a client account frees its place. Disabled accounts still count.</p>
+    </div>
+  </div>
+
+  <p id="load-error" class="auth-card error" hidden>The page did not load properly. Press <b>Ctrl+F5</b> to reload it.
+    If this stays, send a screenshot of the black StakBridge window.</p>
+  <script>
+    // If the page script fails while starting, say so instead of showing an empty page.
+    window.addEventListener("error", () => { if (document.querySelector("#tabs")?.hidden && document.querySelector("#login")?.hidden) document.querySelector("#load-error").hidden = false; });
+  </script>
+  <script src="app.js?v=7"></script>
 </body>
 </html>

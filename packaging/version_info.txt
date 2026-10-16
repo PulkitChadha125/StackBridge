@@ -1,0 +1,35 @@
+# UTF-8
+# Windows "Properties > Details" of StakBridge.exe (StakBridge.spec). Keep the version in step with
+# stakbridge/__init__.py when releasing.
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 0, 0, 0),
+    prodvers=(1, 0, 0, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0),
+  ),
+  kids=[
+    StringFileInfo(
+      [
+        StringTable(
+          u'040904B0',
+          [
+            StringStruct(u'CompanyName', u'ThinkStak'),
+            StringStruct(u'FileDescription', u'StakBridge - MetaTrader 5 trade copier'),
+            StringStruct(u'FileVersion', u'1.0.0.0'),
+            StringStruct(u'InternalName', u'StakBridge'),
+            StringStruct(u'LegalCopyright', u'ThinkStak'),
+            StringStruct(u'OriginalFilename', u'StakBridge.exe'),
+            StringStruct(u'ProductName', u'StakBridge'),
+            StringStruct(u'ProductVersion', u'1.0.0.0'),
+          ],
+        )
+      ]
+    ),
+    VarFileInfo([VarStruct(u'Translation', [1033, 1200])]),
+  ],
+)

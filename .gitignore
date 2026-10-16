@@ -4,3 +4,21 @@ data_fake/
 __pycache__/
 .pytest_cache/
 *.pyc
+# EXE builds
+build/
+dist/
+build_settings.json
+# licence server (superadmin_panel) data: never commit
+superadmin_panel/keys/
+superadmin_panel/*.db*
+superadmin_panel/superadmin_config.json
+superadmin_panel/flask_secret_key.txt
+superadmin_panel/built_exes/
+superadmin_panel/log_uploads/
+server_settings.env
+email_defaults.env
+server_package/
+logs/
+caddy/
+session.bin
+license_cache.json

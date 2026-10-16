@@ -1,4 +1,4 @@
-"""Web UI password login. Programs keep using API tokens (covered by the other tests)."""
+"""Web UI password login."""
 
 import pytest
 from fastapi.testclient import TestClient
@@ -28,7 +28,8 @@ def setup_password(local):
 
 
 def test_first_password_can_only_be_created_locally(local, remote):
-    assert remote.get("/v1/session").json() == {"passwordSet": False, "loggedIn": False, "setupAllowedHere": False}
+    assert remote.get("/v1/session").json() == {"licensed": False, "passwordSet": False, "loggedIn": False,
+                                                "setupAllowedHere": False}
     res = remote.post("/v1/session/setup", json={"password": PASSWORD}, headers=UI)
     assert res.status_code == 403 and res.json()["error"]["code"] == "SETUP_LOCAL_ONLY"
 
@@ -38,7 +39,7 @@ def test_first_password_can_only_be_created_locally(local, remote):
 
     assert local.get("/v1/session").json()["setupAllowedHere"] is True
     setup_password(local)
-    assert local.get("/v1/session").json() == {"passwordSet": True, "loggedIn": True, "setupAllowedHere": True}
+    assert local.get("/v1/session").json() == {"licensed": False, "passwordSet": True, "loggedIn": True, "setupAllowedHere": True}
 
     again = local.post("/v1/session/setup", json={"password": "another password"}, headers=UI)
     assert again.status_code == 409
@@ -86,11 +87,6 @@ def test_too_many_wrong_passwords_are_slowed_down(local, remote):
     codes = [remote.post("/v1/session", json={"password": "guess"}, headers=UI).status_code for _ in range(11)]
     assert codes[:10] == [401] * 10
     assert codes[10] == 429
-
-
-def test_api_token_still_works_for_programs(bridge, local):
-    setup_password(local)
-    assert bridge.get("/accounts").status_code == 200  # Bearer token, no cookie
 
 
 def test_reset_password_command_signs_everyone_out(bridge, local, monkeypatch):

@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Create Admin{% endblock %}
+{% block content %}
+<div class="card card-narrow">
+    <h2>Create Admin</h2>
+    <form method="post">
+        <label>
+            Name / Company
+            <input type="text" name="name" value="{{ form.name if form else '' }}" required autofocus />
+        </label>
+        <label>
+            Username
+            <input type="text" name="username" value="{{ form.username if form else '' }}" required />
+        </label>
+        <label>
+            Email
+            <input type="email" name="email" value="{{ form.email if form else '' }}" placeholder="admin@example.com" />
+        </label>
+        <label>
+            Expiry Date
+            <input type="date" name="expiry_date" value="{{ form.expiry_date if form else '' }}" required />
+        </label>
+        <label>
+            Allowed Installations
+            <input type="number" name="allowed_installations" min="1" value="{{ form.allowed_installations if form else 1 }}" required />
+        </label>
+        <label>
+            Max Client Accounts
+            <input type="number" name="max_client_accounts" min="1" data-client-limit-input
+                   value="{{ form.max_client_accounts if form else default_client_limit }}"
+                   {% if form and form.unlimited_client_accounts %}disabled{% endif %} />
+        </label>
+        <label class="checkbox-row">
+            <input type="checkbox" name="unlimited_client_accounts" value="1" data-client-limit-toggle
+                   {% if form and form.unlimited_client_accounts %}checked{% endif %} />
+            Unlimited client accounts
+        </label>
+        <label>
+            Notes
+            <textarea name="notes" rows="3">{{ form.notes if form else '' }}</textarea>
+        </label>
+        <button type="submit">Create Admin</button>
+    </form>
+    <p class="muted section-note">A temporary password is generated automatically and shown once on the next page. It is never stored - only its Argon2id hash is saved.</p>
+    <p class="muted section-note">Max Client Accounts is how many client accounts this Admin can add in their app. You can raise or lower it later on the Admin's page.</p>
+    <p class="muted section-note">Email is optional but needed for automatic "license expires tomorrow" reminders - see Settings for the owner copy address.</p>
+</div>
+{% endblock %}

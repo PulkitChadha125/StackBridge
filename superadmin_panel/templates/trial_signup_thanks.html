@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Your Trial Is Ready{% endblock %}
+{% block content %}
+<div class="card card-narrow">
+    <h2>Your Trial Is Ready</h2>
+    <p class="section-note">
+        <a href="{{ download_url }}"><button type="button" class="btn-success">Download StakBridge</button></a>
+    </p>
+    <p class="section-note">
+        Your username and password have been sent to <strong>{{ email }}</strong> &mdash; you'll need them to log in
+        after installing. The same email also has this download link.
+    </p>
+    <p class="muted section-note">
+        Didn't get the email within a few minutes? Check spam, or contact us directly.
+    </p>
+</div>
+{% endblock %}

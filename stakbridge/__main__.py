@@ -1,4 +1,4 @@
-"""Command line: `python -m stakbridge serve | set-password | create-token`."""
+"""Command line: `python -m stakbridge serve | set-password`."""
 
 import argparse
 import getpass
@@ -20,9 +20,6 @@ def main() -> None:
 
     commands.add_parser("set-password", help="set or reset the web UI password (signs out all browsers)")
 
-    token = commands.add_parser("create-token", help="create an API token for a signal program (shown once)")
-    token.add_argument("--label", default="")
-
     args = parser.parse_args()
 
     from .config import load_settings
@@ -31,27 +28,30 @@ def main() -> None:
     settings = load_settings()
     db = Database(settings.db_path)
 
-    if args.command == "create-token":
-        from .security import hash_token, new_api_token
-
-        value = new_api_token()
-        db.add_token(hash_token(value), args.label)
-        print("New API token for programs that send trades (stored only as a hash, save it now):")
-        print(f"   {value}")
-        print("Send it in every request as:  Authorization: Bearer <token>")
-        return
-
     if args.command == "set-password":
+        from .licensing import paths
+
+        if paths.server_url():
+            print("This StakBridge signs in with a licence: use 'Forgot password' on the sign-in page instead.")
+            return
         set_password(db)
         return
 
     import uvicorn
 
+    from . import logfiles
     from .api import create_app
+    from .licensing import paths
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    licence_server = paths.server_url()
+    logfiles.install((paths.device_root() if licence_server else settings.data_dir) / "logs")
     log = logging.getLogger("stakbridge")
-    log.info("data folder: %s  backend: %s", settings.data_dir, settings.backend)
+    if licence_server:
+        log.info("licence server: %s  (each Admin's data is kept under %s)", licence_server,
+                 paths.device_root() / paths.ADMINS_DIR)
+    else:
+        log.info("data folder: %s  backend: %s", settings.data_dir, settings.backend)
     log.info("open http%s://%s:%s in your browser", "s" if args.ssl_certfile else "", args.host, args.port)
     uvicorn.run(
         create_app(settings),

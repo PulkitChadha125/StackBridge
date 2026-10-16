@@ -1,6 +1,6 @@
-# StakBridge v1
+# StakBridge
 
-Send one REST request with a strategy tag, and the trade is placed at the same time on every connected MT5 account assigned to that tag. Full spec: [StakBridge_v1_Spec.md](StakBridge_v1_Spec.md).
+A trade copier for MetaTrader 5. You trade by hand (or with an EA) on one **master** account, and every trade opened, changed or closed there is copied at once to all **client** accounts.
 
 ## Quick start (Windows)
 
@@ -9,17 +9,12 @@ Send one REST request with a strategy tag, and the trade is placed at the same t
 | `run.bat` | Starts StakBridge with real MT5 terminals. Data goes in `data\`. |
 | `run_demo.bat` | Starts StakBridge with a simulated broker, so nothing real is traded. Data goes in `data_fake\`. |
 | `run_tests.bat` | Runs the automated tests |
+| `run_panel.bat` | Runs the licence server (SuperAdmin panel) on this PC to try it out, on http://127.0.0.1:5070 |
+| `build.bat` | Builds `dist\StakBridge.exe` by hand (normally the panel's **Build EXE** button does it) |
 
 The first run sets up `.venv` and installs `requirements.txt`. The browser then opens http://127.0.0.1:8000.
 
-**Two ways in:**
-
-| Who | How they sign in | How to get it |
-| --- | --- | --- |
-| You, in the browser | A **password** | Created on the first visit. Only possible from this PC. Reset it with `run.bat password`. Stays signed in for 30 days. |
-| Programs that send trades | An **API token** in `Authorization: Bearer <token>` | `run.bat token` (shown once, stored only as a hash) |
-
-Add `fake` to `run.bat password` or `run.bat token` to change the demo instead, for example `run.bat password fake`.
+You sign in with a **password**, created on the first visit (only possible from this PC). Reset it with `run.bat password`. You stay signed in for 30 days. Add `fake` to change the demo's password instead: `run.bat password fake`.
 
 **How to test everything step by step: [TESTING.md](TESTING.md).**
 
@@ -28,14 +23,60 @@ Manual equivalent:
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe -m stakbridge serve             # UI and API on http://127.0.0.1:8000
+.\.venv\Scripts\python.exe -m stakbridge serve             # web page on http://127.0.0.1:8000
 .\.venv\Scripts\python.exe -m stakbridge set-password      # set or reset the web page password
-.\.venv\Scripts\python.exe -m stakbridge create-token      # API token for a signal program
 ```
 
-**One terminal per account.** Copy an MT5 install folder once per account (for example `C:\MT5\acct_a\`) and put that folder's `terminal64.exe` in the account's *Terminal path*. In each terminal, turn on *Algo Trading*.
+**One MetaTrader per account.** Each account needs its own MT5 installation (for example `C:\Program Files\MetaTrader 5 - B\terminal64.exe`) in its *Terminal path*. Two accounts sharing one MetaTrader keep logging each other out; StakBridge then shows `WRONG_ACCOUNT_IN_TERMINAL` and stops trading on that account. In each MetaTrader, turn on *Algo Trading*.
 
-To try everything without MT5, set `$env:STAKBRIDGE_BACKEND = "fake"` before `serve`. This uses a simulated broker.
+## Licence (selling StakBridge)
+
+StakBridge is sold as a desktop program, `StakBridge.exe`, controlled by a licence server that you run: the **SuperAdmin panel** in `superadmin_panel/`. How to install it on your VPS: **[SERVER_SETUP.md](SERVER_SETUP.md)**.
+
+| Who | Uses |
+| --- | --- |
+| You (SuperAdmin) | The panel: create customers (Admins) with an expiry date, number of PCs and number of client accounts, build each one's `.exe`, revoke, reset passwords, see who is online, download a PC's log |
+| Your customer (Admin) | `StakBridge.exe`: signs in with the username and password you give them, changes the password at the first sign-in |
+| Anyone | The free-trial page `/trial`: email, 6-digit code, a 7-day trial download. One trial per email and per PC |
+
+What the licence does in StakBridge:
+- **Sign-in** with username and password, checked by the licence server. "Forgot password" sends a code by email. The sign-in is kept for the next start (encrypted for this Windows user, DPAPI), so the window opens already signed in.
+- **Licence check** at start, when a Trading switch is turned ON, and every 30 minutes. While the licence is not valid (expired, revoked) **no new trades are copied**; closes and SL/TP changes still are, so clients are never stuck in a trade. Without internet the signed offline licence works for 72 hours.
+- **Client limit**: every account except one (the master's place) counts. Adding one asks the server first; the limit is shared by all the customer's PCs.
+- **Telemetry** every 15 minutes: version, whether copying runs, account counts and the last 20 trades (symbol, side, lots, status). Never MetaTrader logins, passwords or servers.
+- **Log requests**: the SuperAdmin can ask for up to 7 days of this PC's log files (`logs\stakbridge-YYYY-MM-DD.log`).
+- **Each Admin has their own data folder**: `%LOCALAPPDATA%\StakBridge\admins\<id>\`. If the SuperAdmin deletes the Admin, the next check signs out and erases that folder.
+- **Signing out stops copying** on that PC until someone signs in again.
+
+Without a licence server (running from source with `run.bat`, as before) none of this applies and the page keeps its own password. With `STAKBRIDGE_LICENSE_SERVER=http://...` set, `run.bat` signs in with the licence too. An `.exe` without a licence server inside refuses to start.
+
+## Progress, 16 October 2026
+
+- **Limit and stop orders are copied** while they wait (placed, moved, deleted), and the trade follows when the master's order fills.
+- **Licence system added**: the SuperAdmin panel (licence server, port 5070), `StakBridge.exe` per customer, sign-in, 7-day free trial on `/trial`, client limits, telemetry, log requests. Tried for real on this PC: building an EXE, signing in, limits, revoke, delete, offline use, trial.
+- **Add / Edit account** is a pop-up with one Name field (the internal id is made automatically).
+- **Subtle animations** and **System / Light / Dark** appearance in both StakBridge and the panel.
+- **ThinkStak logo** in the header of both StakBridge and the panel (white in dark mode, dark in light mode).
+- **Email works**: the default mailbox (`hello@thinkstak.com` on Hostinger) is in `email_defaults.env` (kept out of git), used by `run_panel.bat` and `setup_server.bat`. A real test email and a "New trial signup" alert arrived in the owner's Gmail. The panel's **Settings** page has a **Send Test Email** button. Every trial signup emails the owner automatically.
+- 328 automated tests pass.
+- Still to try: the VPS setup (`setup_server.bat` on the server), HTTPS, and limit-order copying on real MetaTrader.
+
+## How copying works
+
+- The account with Role **Master** is watched. **Every other account is a client** and copies the master, at the same lot size unless the Copier tab sets a lot multiplier.
+- Each account has a **Trading** switch. A client with Trading OFF gets no new copies; the other clients still do. The master's Trading switch turns copying of new trades on or off for everyone.
+- **Stop all** blocks new copies on every account. Closes and SL/TP changes still go through, so clients always follow the master out.
+- **Limit and stop orders** are copied while they wait: placed, moved and deleted on the clients together with the master. When the master's order fills, each client gets the trade (its own order if it filled already, otherwise at market). Stop-limit orders are copied once they open a trade.
+- Copies carry magic `990000` and the comment `copy <master ticket>`. Trades you place yourself on a client are never touched.
+
+## Web page
+
+| Tab | What it shows |
+| --- | --- |
+| Accounts | Master and clients with live **Balance, Equity and Open P/L** (about once a second), the Trading switch, and buttons: **Open MT5** (opens that account's MetaTrader window on this PC), Check, Positions, Edit, Disable, Remove |
+| Trades | Every master trade, newest first. Click one for a pop-up showing, per account, whether it was copied, the ticket, open/close latency and any error in plain words |
+| Copier | Master choice, lot multiplier and symbol names per client, latency figures, recent copies |
+| Log | StakBridge's own events: connects, errors, refused orders, settings changes |
 
 ## Tests
 
@@ -43,7 +84,7 @@ To try everything without MT5, set `$env:STAKBRIDGE_BACKEND = "fake"` before `se
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-`tests/test_acceptance.py` holds the 9 acceptance tests from section 7 of the spec. `tests/test_safety.py` covers the safety rules. Both run against the simulated broker.
+All tests run against the simulated broker.
 
 ## Settings (environment variables)
 
@@ -51,58 +92,51 @@ To try everything without MT5, set `$env:STAKBRIDGE_BACKEND = "fake"` before `se
 | --- | --- | --- |
 | `STAKBRIDGE_DATA_DIR` | `./data` | Database and encryption key location |
 | `STAKBRIDGE_BACKEND` | `mt5` | `mt5` or `fake` |
-| `STAKBRIDGE_TRADE_TIMEOUT` | `10` | Seconds to wait for all accounts before reporting `unknown` |
-| `STAKBRIDGE_TRADE_RATE_LIMIT` | `120` | Trade requests per token per minute |
+| `STAKBRIDGE_TRADE_TIMEOUT` | `10` | Seconds to wait for a terminal's answer before a copy shows `unknown` |
+| `STAKBRIDGE_STATUS_INTERVAL` | `1` | Seconds between connection checks; balance, equity and open P/L are read then |
 | `STAKBRIDGE_DEVIATION_POINTS` | `20` | Max slippage for market orders |
 | `STAKBRIDGE_ALLOW_LIVE` | off | Live accounts are refused unless this is `1` |
-| `STAKBRIDGE_SECRET_KEY` | key file | Password encryption key. If not set, `data/secret.key` is created. Back it up. |
-| `STAKBRIDGE_COPY_POLL_MS` | `2` | Copier: how often the master's positions are checked, in milliseconds |
-| `STAKBRIDGE_COPY_MAX_AGE` | `30` | Copier: after a restart, a master position StakBridge missed is copied only if it is at most this many seconds old |
+| `STAKBRIDGE_COPY_POLL_MS` | `2` | How often the master's positions are checked, in milliseconds |
+| `STAKBRIDGE_COPY_MAX_AGE` | `30` | After a restart, a master position StakBridge missed is copied only if it is at most this many seconds old |
+| `STAKBRIDGE_LICENSE_SERVER` | inside the EXE | Licence server address. Not set and not in the EXE: no licence (local password) |
+| `STAKBRIDGE_DEVICE_DIR` | `%LOCALAPPDATA%\StakBridge` | Licence files, logs and each Admin's data folder |
+| `STAKBRIDGE_LICENSE_PUBLIC_KEY` | inside the EXE | The licence server's public key, to check the offline licence |
+| `STAKBRIDGE_PORT` / `STAKBRIDGE_HOST` | `8000` / `127.0.0.1` | The EXE's local web server. `0.0.0.0` lets other PCs open the page (VPS) |
+| `STAKBRIDGE_LICENSE_CHECK_SECONDS` | `1800` | Licence check interval |
+| `STAKBRIDGE_TELEMETRY_SECONDS` | `900` | Telemetry interval |
 
 For HTTPS, pass `--ssl-certfile` and `--ssl-keyfile` to `serve`, or put it behind a reverse proxy.
 
-## Decisions made on the open questions
+## API (used by the web page)
 
-| Question | Decision |
-| --- | --- |
-| Netting accounts | Refused. The account shows `error: NETTING_NOT_SUPPORTED`. Only hedging accounts keep strategies apart. |
-| Different broker lot rules | Volume is rounded **down** to each broker's lot step. Below the broker min or above its max, that account is `rejected`. The filled volume is in the result. |
-| All assigned accounts offline | `200`, every account `skipped / DISCONNECTED`. `409 NO_ELIGIBLE_ACCOUNT` only when no account is assigned to the tag. |
-| Same requestId, different body | `409 REQUEST_ID_REUSED`. An identical resend returns the stored result with `"replayed": true` and never trades again. |
-| Stop all | Saved in the database, so it survives restarts. Blocks new **opens** only. **Closes are still allowed** so you can flatten. Release it with `DELETE /v1/kill` or *Resume trading*. |
-| Paused strategy | Same rule: opens refused, closes allowed. |
-| Account trading switch OFF | The account is skipped for both opens and closes, so it is not touched at all. |
-| Pending orders on close | `close` closes the strategy's positions **and** cancels its pending orders. |
-| Timeout | An account that does not answer in time is `unknown`. It is never resent. When the late answer arrives, the stored result is updated (`detail.lateReply`). |
-| Demo only | Live accounts are blocked unless `STAKBRIDGE_ALLOW_LIVE=1`. |
+All under `/v1`, signed in with the session cookie. Requests that change something must send `X-StakBridge: 1`. Errors look like `{"error": {"code", "message"}}`.
 
-## Additions to the spec
-
-- `DELETE /v1/kill`: releases Stop all.
-- `GET /v1/trades`: the trade log used by the Trades tab.
-- `GET /v1/accounts/{id}/positions`: open positions and pending orders of one account (the **Positions** button in the UI).
-- **Trade copier** (Copier tab): mirrors one master account onto client accounts, with a lot multiplier per client. Opens, SL/TP changes and closes are copied. Each client can map symbols that its broker names differently (for example master `XAUUSD` → client `GOLD`). Unmapped symbols use the account suffixes. `GET /v1/copier` returns the settings and recent copies; `PUT /v1/copier` with `{"masterId", "active", "clients": [{"accountId", "multiplier", "symbols": {"XAUUSD": "GOLD"}}]}` changes them. How to test it: [TESTING.md, Part 6](TESTING.md#part-6-test-the-copier).
-- Appearance: **System**, **Light** or **Dark**, top right. Remembered per browser.
-- **Log** tab: StakBridge's own events, kept in the database (newest 5000): connects and disconnects, connection errors in plain words, refused orders, copier problems and settings changes. `GET /v1/logs?level=info|warning|error` and `DELETE /v1/logs`.
-- Terminal path: a MetaTrader folder or a quoted path is accepted and turned into the `terminal64.exe` path. In real MT5 mode a path with no program behind it is refused when you save it (`TERMINAL_PATH_INVALID`).
-- Trades tab: a collapsed **Send a trade request** panel for testing without curl.
-- `GET/POST/DELETE /v1/session` and `POST /v1/session/setup`: web page password sign-in. The browser gets a 30-day session cookie (HttpOnly, SameSite=Strict). Every browser request that changes something must also send the `X-StakBridge: 1` header, so other websites can't misuse the cookie. Sign-in is limited to 10 attempts per minute.
-- Errors use the shape `{"error": {"code", "message"}}`. `409 KILL_SWITCH_ON` is returned for opens while stopped.
-- The `accounts` table has an extra `terminal_path` column. Live connection status is kept in memory, not in the database.
+- `GET/POST /accounts`, `PATCH/DELETE /accounts/{id}`, `GET /accounts/{id}/positions`, `GET /accounts/{id}/check`, `POST /accounts/{id}/open-terminal`
+- `GET /copier`, `PUT /copier` with `{"masterId", "clients": [{"accountId", "multiplier", "symbols": {"XAUUSD": "GOLD"}}]}`
+- `GET /orders`, `GET /orders/{ticket}/logs`: master trades and what happened on each client
+- `POST/DELETE /kill`: Stop all / resume
+- `GET /logs?level=info|warning|error`, `DELETE /logs`, `GET /health`
+- `GET/POST/DELETE /session`, `POST /session/setup`: sign-in (with a licence: `{"username", "password"}`)
+- With a licence: `POST /session/password` (change), `POST /session/forgot/request|verify|reset`, `GET /license` (`?refresh=true` asks the server now), `GET /launch?token=` (the EXE window's one-time sign-in link)
 
 ## Layout
 
 ```
 stakbridge/
   api.py              REST endpoints and UI serving
-  trading.py          strategy-tag routing and parallel fan-out
   copier.py           trade copier: mirrors the master's positions onto the clients
+  desktop.py          the EXE: web server + its own window
+  licensing/          sign-in to the licence server, licence checks, client limit, telemetry, log requests
+  logfiles.py         daily log files
   db.py               SQLite storage
+  errors.py           API errors, sign-in rate limit
   models.py           request validation
-  security.py         token hashing, password encryption
+  security.py         password hashing and encryption
   workers/manager.py  starts and supervises one process per account
   workers/process.py  the worker loop (one MT5 terminal each)
   workers/backends.py real MT5 calls + simulated broker
-  static/             the web UI (plain HTML/JS/CSS)
-tests/
+  static/             the web page (plain HTML/JS/CSS)
+desktop_launcher.py   start of the EXE (StakBridge.spec)
+superadmin_panel/     the licence server (SuperAdmin panel), see SERVER_SETUP.md
+tests/                StakBridge tests; tests/superadmin/ the licence server's
 ```

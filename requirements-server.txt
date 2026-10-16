@@ -1,0 +1,8 @@
+# SuperAdmin license server (superadmin_panel/) - install on the VPS with setup_server.bat.
+# The server also builds each Admin's StakBridge EXE, so it needs the app's own
+# packages too (requirements.txt) plus PyInstaller.
+-r requirements.txt
+Flask                   # the SuperAdmin web panel and the licence API
+argon2-cffi             # password and code hashing (server only, never in the EXE)
+waitress                # production web server that runs the panel
+pyinstaller             # builds the StakBridge EXE for each Admin

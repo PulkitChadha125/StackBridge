@@ -1,44 +1,16 @@
 """Request bodies accepted by the API. JSON uses camelCase, Python uses snake_case."""
 
-from typing import Annotated, Literal
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from pydantic.alias_generators import to_camel
 
 NAME_PATTERN = r"^[A-Za-z0-9_\-]{1,40}$"
 
 
 class ApiModel(BaseModel):
-    # extra="forbid" turns a typo such as "strategy_tag" into a 400 instead of a silently ignored field
+    # extra="forbid" turns a typo such as "symbol_suffix" into a 400 instead of a silently ignored field
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
-
-
-class TradeIn(ApiModel):
-    request_id: str = Field(min_length=1, max_length=64)
-    strategy: str = Field(min_length=1, max_length=40)
-    action: Literal["open", "close"]
-    symbol: str | None = Field(None, min_length=1, max_length=32)
-    side: Literal["buy", "sell"] | None = None
-    type: Literal["market", "limit", "stop"] | None = None
-    volume: float | None = Field(None, gt=0)
-    price: float | None = Field(None, gt=0)
-    sl: float | None = Field(None, ge=0)
-    tp: float | None = Field(None, ge=0)
-    comment: str | None = Field(None, max_length=31)
-
-    @model_validator(mode="after")
-    def _check_action_fields(self):
-        if self.action == "open":
-            missing = [name for name in ("symbol", "side", "type", "volume") if getattr(self, name) is None]
-            if missing:
-                raise ValueError(f"open needs: {', '.join(missing)}")
-            if self.type in ("limit", "stop") and self.price is None:
-                raise ValueError("price is required for limit and stop orders")
-        return self
-
-    def payload(self) -> dict:
-        """Canonical form, used to tell a true resend from a reused requestId."""
-        return self.model_dump(by_alias=True, exclude_none=True)
 
 
 class AccountIn(ApiModel):
@@ -63,21 +35,6 @@ class AccountPatch(ApiModel):
     trading_on: bool | None = None
 
 
-class StrategyIn(ApiModel):
-    tag: str = Field(pattern=NAME_PATTERN)
-    max_volume: float = Field(gt=0)
-    active: bool = True
-
-
-class StrategyPatch(ApiModel):
-    active: bool | None = None
-    max_volume: float | None = Field(None, gt=0)
-
-
-class StrategyAccounts(ApiModel):
-    account_ids: list[str]
-
-
 Symbol = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=32)]
 
 
@@ -90,12 +47,27 @@ class CopierClient(ApiModel):
 
 class CopierIn(ApiModel):
     master_id: str | None = Field(None, min_length=1, max_length=40)
-    active: bool = False
+    # Lot multiplier and symbol names per client. A client not listed here copies at x1.
     clients: list[CopierClient] = []
 
 
 class LoginIn(ApiModel):
+    # The username is only used with a licence (the licence server's account); otherwise the page password is enough.
+    username: str | None = Field(None, max_length=120)
     password: str = Field(min_length=1, max_length=200)
+
+
+class PasswordChangeIn(ApiModel):
+    current_password: str = Field(min_length=1, max_length=200)
+    new_password: str = Field(min_length=8, max_length=200)
+
+
+class ForgotIn(ApiModel):
+    email: str = Field(min_length=3, max_length=200)
+    code: str | None = Field(None, max_length=20)
+    reset_token: str | None = Field(None, max_length=400)
+    new_password: str | None = Field(None, max_length=200)
+    confirm_password: str | None = Field(None, max_length=200)
 
 
 class PasswordSetupIn(ApiModel):

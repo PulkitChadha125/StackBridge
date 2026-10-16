@@ -5,7 +5,7 @@ This guide walks you through testing StakBridge with the 3 MetaTrader 5 programs
 **What you will test**
 
 - **The copier.** You trade on one account (the **master**), and StakBridge copies every trade to the other two accounts (the **clients**). When you close on the master, the clients close too.
-- **Strategy trading** (optional, Part 8). Another program sends a trade to StakBridge, and StakBridge places it on several accounts at once.
+- **The licence** (optional, Part 8). The licence server, a customer's `.exe`, sign-in, trial, limits.
 
 **Time needed:** about 1 hour the first time. Do it while the market is open (Monday to Friday). At the weekend every order is refused.
 
@@ -29,7 +29,7 @@ These are already installed on your PC. Each one is logged into its own account:
 
 1. Open the folder `D:\Desktop\python projects\StackBridge`.
 2. Double-click **`run_tests.bat`**. A black window opens. The first time, it installs things, which takes a few minutes.
-3. Wait until it stops. At the bottom you should see **`48 passed`**.
+3. Wait until it stops. At the bottom you should see **`322 passed`**.
 4. Press any key to close the window.
 
 If you see `failed` instead, stop here and send me what the window shows.
@@ -68,6 +68,12 @@ You know it worked when the bottom-right corner of MetaTrader shows a speed numb
 
 In each MetaTrader program, click the **Algo Trading** button on the top toolbar so it turns **green**.
 
+Then, in each program, open **Tools → Options → Expert Advisors** and **untick**:
+- "Disable algorithmic trading when the account has been changed"
+- "Disable algorithmic trading via external Python API" (if your version has it)
+
+Press **OK**. Otherwise MetaTrader can switch Algo Trading off by itself when StakBridge logs in.
+
 If you skip this, the accounts can't trade through StakBridge.
 
 ### Step 4: Find each broker's name for gold
@@ -104,25 +110,36 @@ Keep all 3 MetaTrader programs open and logged in while you test. If one closes,
 ## Part 4: Add your 3 accounts
 
 1. Click the **Accounts** tab.
-2. Click **+ Add account** at the bottom.
-3. Fill in the form for **acct_a**:
+2. Click **+ Add account** at the bottom. A pop-up opens.
+3. Fill it in for **acct_a**:
 
    | Box | What to type |
    | --- | --- |
+   | Role | **Master account** |
    | Name | `Master A` |
-   | Account id | `acct_a` |
    | MT5 login | the login number you wrote down |
    | Password | that account's password |
    | Server | the server, exactly as you wrote it down |
    | Symbol suffix | the suffix from Step 4, or leave it empty |
    | Terminal path | `C:\Program Files\MetaTrader 5\terminal64.exe` (typing just the folder `C:\Program Files\MetaTrader 5` works too) |
 
-4. Press **Add account**.
-5. Do the same for the other two:
+4. Press **Add account**. The pop-up closes. (**Cancel**, **×** or the **Esc** key close it without saving. **Edit** on an account opens the same pop-up.)
+5. Do the same for the other two, with Role **Client account**:
    - **acct_b**: Name `Client B`, Terminal path `C:\Program Files\STARTRADER Financial MetaTrader 5\terminal64.exe`
    - **acct_c**: Name `Client C`, Terminal path `C:\Program Files\MetaTrader 5 - C\terminal64.exe`
 6. Wait up to a minute. Each account's **Status** turns into a green dot with **Connected**, and its balance appears.
-7. Each account has a **Trading** button showing **OFF**. Click it on all 3 so it turns green **ON**. Accounts always start OFF for safety.
+   The master is shown on its own at the top (**Master account**), the clients below it (**Client accounts**).
+7. Each account has a red **○ OFF** button under **Trading**. Click it on all 3. It shows **Saving…**, then turns green **● ON**. Accounts always start OFF for safety.
+8. Each time you switch Trading ON, StakBridge asks that MetaTrader for the account's numbers right away and shows them under the account: **Balance, Equity, Open P/L, Free margin, Leverage, Open positions, Ping to broker** and how long the answer took.
+   - Green box **Connection OK**: the account is ready.
+   - Yellow box: connected, but there's a problem, for example Algo Trading is off. The box says what to do.
+   - Red box **Check failed**: MetaTrader didn't answer. Check the Status column and the Log tab.
+
+   You can press **Check** on any account at any time to read the numbers again.
+9. The **Balance**, **Equity** and **Open P/L** columns update by themselves about once a second. Open P/L is green when in profit and red when in loss.
+10. **Open MT5** brings up that account's MetaTrader window (it starts it if it isn't running).
+
+> Every account that isn't the master is a client automatically: there's nothing to tick. No master yet? Press **Make master** on the account you trade on.
 
 **If an account doesn't show Connected:**
 
@@ -132,6 +149,7 @@ Keep all 3 MetaTrader programs open and logged in while you test. If one closes,
 | `TERMINAL_PATH_INVALID` | There's no MetaTrader program at the Terminal path | Click **Edit** and use the path from the table at the top of this guide |
 | `TERMINAL_NOT_STARTED` | StakBridge couldn't start that MetaTrader | Double-click that MetaTrader yourself. If it opens, log in, then wait: StakBridge retries every 10 seconds. If it doesn't open, reinstall it. |
 | `TERMINAL_NOT_REACHED` | That MetaTrader is open but not answering | Close that MetaTrader. StakBridge starts it again within about 10 seconds. |
+| `WRONG_ACCOUNT_IN_TERMINAL` | Two accounts use the same MetaTrader, so they keep logging each other out. StakBridge stops trading on it so no order lands on the wrong account. | Click **Edit** and give each account its own Terminal path (see the table at the top). An **empty** Terminal path means "the default MetaTrader", which is usually acct_a's. |
 | `NETTING_NOT_SUPPORTED` | It's not a hedging account | Open a different demo account |
 | `LIVE_ACCOUNT_BLOCKED` | It's a real-money account | Use a demo account |
 | `ALGO_TRADING_OFF_IN_TERMINAL` | Algo Trading is off in that program | Click **Algo Trading** in MetaTrader so it turns green |
@@ -142,8 +160,8 @@ Keep all 3 MetaTrader programs open and logged in while you test. If one closes,
 ## Part 5: Set up the copier
 
 1. Click the **Copier** tab.
-2. Under **Master account**, choose **Master A (acct_a)**.
-3. Under **Client accounts**, tick **Client B** and **Client C**.
+2. Under **Master account**, **Master A (acct_a)** is already chosen (from its Role in Part 4).
+3. Under **Client accounts**, **Client B** and **Client C** are listed. Every account except the master copies the master; there is nothing to tick.
 4. In the **Lot multiplier** box, leave Client B at `1` and change Client C to `2`. Client C will then always trade twice the master's size.
 5. **Only if a client's broker uses a different name** (from Part 2, Step 4), set up symbol mapping for that client:
    1. In that client's row, click **Map symbols**.
@@ -157,8 +175,9 @@ Keep all 3 MetaTrader programs open and logged in while you test. If one closes,
    > You don't need a mapping when only the suffix differs (`XAUUSD` vs `XAUUSD.m`). The **Symbol suffix** from Part 4 already handles that. A mapping, when you add one, is used instead of the suffix for that symbol.
 
 6. Press **Save changes**.
-7. Click the **OFF** button next to "Trade copier" so it turns green **ON**.
-8. Under the title you should now see a green dot and **Watching acct_a**.
+7. Under the title you should now see a green dot and **Watching acct_a**. If it says the master has Trading OFF, switch acct_a's Trading **ON** in the Accounts tab.
+
+> There is no separate copier ON/OFF switch. Copying is controlled by the **Trading** switches: the master's switch for everyone, each client's switch for that client only.
 
 > Trades that were already open on acct_a before this point are **not** copied. Only new trades are.
 
@@ -166,7 +185,14 @@ Keep all 3 MetaTrader programs open and logged in while you test. If one closes,
 
 ## Part 6: Test the copier
 
-In each test, you trade in the **acct_a MetaTrader program** (`C:\Program Files\MetaTrader 5`) just as you normally would. Then you check the client programs and the StakBridge **Copier** tab.
+In each test, you trade in the **acct_a MetaTrader program** (`C:\Program Files\MetaTrader 5`) just as you normally would. Then you check the client programs and the StakBridge **Trades** tab.
+
+**The Trades tab** lists every trade you open on the master, newest first. Each row shows the symbol, side, lots, price, SL/TP, whether the master trade is still open, and how many clients got it (for example `2 of 2 copied`). **Click a row** and a pop-up opens with:
+- each client account: **Copied** / **Not copied** / **Failed**, client ticket, lots, open and close price, **open and close latency** (how long the copy took, and the broker's part of it), and the **error or reason** in plain words
+- the trade on the master (ticket, price, SL, TP, when it was seen, when it closed) and its history
+- log entries about this trade
+
+The pop-up updates by itself. Close it with the **×**, the **Esc** key, or a click outside it.
 
 **Useful MetaTrader actions**
 - **New trade:** press **F9** (New Order), choose the symbol, type the volume, and click **Buy by Market** or **Sell by Market**.
@@ -182,7 +208,7 @@ In each test, you trade in the **acct_a MetaTrader program** (`C:\Program Files\
 - **acct_b program** (Trade tab): a new buy of **0.01** lots, with the same SL and TP.
 - **acct_c program:** a new buy of **0.02** lots (×2), with the same SL and TP.
 - Each copy's **Comment** says `copy` followed by the master's ticket number.
-- StakBridge **Copier** tab: two rows with status **open**.
+- StakBridge **Trades** tab: the trade, with `2 of 2 copied`. Click it: both clients show **Copied** with their latency.
 
 ### C2: SL/TP changes are copied
 
@@ -210,17 +236,35 @@ In each test, you trade in the **acct_a MetaTrader program** (`C:\Program Files\
 
 **You should see:** the gold copy on acct_b closes, but **your own EURUSD trade stays open**. Close it yourself afterwards.
 
-### C6: Switching the copier off
+### C5b: Limit and stop orders are copied
 
 **Do:**
-1. In the Copier tab, click **ON** so it turns **OFF**.
+1. In acct_a, place a **Buy Limit** of 0.01 gold a few dollars **below** the current price, with an SL and a TP (right-click the chart → **Trading** → **Buy Limit**, or **New Order** → Type **Pending Order**).
+2. Wait a second, then move that order's price (drag its line on the chart, or right-click it in the Trade tab → **Modify or Delete**).
+3. Delete the order (right-click → **Modify or Delete** → **Delete**).
+4. Place another Buy Limit just below the price and wait until the price comes down and it fills.
+
+**You should see:**
+1. acct_b and acct_c each show a waiting **Buy Limit** at the same price, SL and TP (0.01 and 0.02 lots). Trades tab: Master **waiting**, clients **Order placed, waiting**.
+2. The client orders move to the new price.
+3. The client orders disappear. Trades tab: Master **cancelled**, clients **Order deleted**.
+4. When the master's order fills, each client gets the trade within a second: its own order if it filled already, otherwise its order is deleted and the trade is opened at market. From then on SL/TP changes and the close are copied as usual.
+
+> Stop-limit orders are not copied while waiting; the trade they open is copied at market. If **Stop all** is on when a master order fills, the clients' orders are deleted and no trade is opened (`KILL_SWITCH_ON`).
+
+### C6: Trading OFF on one client only
+
+**Do:**
+1. In the Accounts tab, switch **Client C**'s Trading **OFF**.
 2. In acct_a, buy 0.01 gold.
 
-**You should see:** nothing is copied. The Copier tab shows the two rows as **skipped** with reason `COPIER_PAUSED`.
+**You should see:** Client B gets the copy as usual. Client C gets nothing. In the Trades tab pop-up, Client C shows **Not copied** with `TRADING_OFF`.
 
-3. Close that trade on acct_a. Click **OFF** so it turns **ON** again.
+3. Close that trade on acct_a. Switch Client C's Trading **ON** again.
 
-> Good to know: while the copier is OFF, new trades aren't copied, but **closes and SL/TP changes still are**. That way you can always get your clients out of a trade.
+**Also try:** switch the **master's** Trading OFF and buy on acct_a. Then **no** client copies it (`MASTER_TRADING_OFF`). Close it and switch the master back ON.
+
+> Good to know: while Trading is OFF, new trades aren't copied, but **closes and SL/TP changes from the master still are** (except to a client whose own switch is OFF). That way you can always get your clients out of a trade.
 
 ### C7: A client that goes offline
 
@@ -229,7 +273,7 @@ In each test, you trade in the **acct_a MetaTrader program** (`C:\Program Files\
 2. In StakBridge, **Accounts** tab: click **Disable** on **Client C**.
 3. In acct_a, close the trade.
 
-**You should see:** the copy on acct_b closes at once. The copy on acct_c **stays open**, and the Copier tab shows `CLOSE_WAITING: DISCONNECTED`.
+**You should see:** the copy on acct_b closes at once. The copy on acct_c **stays open**, and the Trades tab pop-up shows `CLOSE_WAITING: DISCONNECTED` for it.
 
 4. Click **Enable** on Client C and wait until it shows **Connected**.
 
@@ -268,38 +312,6 @@ In the **Copier** tab, look at the boxes above the table:
 
 ---
 
-## Part 8 (optional): Strategy trading tests
-
-These test the other half of StakBridge: a program sends a trade to StakBridge, and StakBridge places it on the accounts linked to a **strategy**.
-
-**Before you start:** go to the **Copier** tab and switch the copier **OFF**. Otherwise anything placed on acct_a here would also be copied, which makes the results confusing. Switch it back ON afterwards.
-
-**Set up:**
-1. **Strategies** tab. In the box at the bottom left, type `gold_scalper`, max lots `1`, and press **+ New strategy**. Do the same for `swing_eur` with max lots `2`.
-2. Click **gold_scalper** and tick **Master A** and **Client B**. Click **swing_eur** and tick **Client B** and **Client C**.
-
-**How to send a trade:** **Trades** tab → open **Send a trade request**. The buttons fill in the request for you:
-- **Open market:** buys 0.01 gold for the strategy selected in the Strategies tab.
-- **Close strategy:** closes everything that strategy opened.
-
-Press **Send**. The answer appears below. Each click on a button creates a new request id, and pressing **Send** twice without clicking a button sends the same request again (that's test 5).
-
-| # | Do this | It works if |
-| --- | --- | --- |
-| 1 | Look at the Accounts tab | All 3 show **Connected** |
-| 2 | Select `gold_scalper`, click **Open market**, **Send** | `HTTP 200`. Only acct_a and acct_b get a trade, acct_c gets nothing |
-| 3 | Change `"strategy"` to `"nope"` and **Send** | `HTTP 400` `UNKNOWN_STRATEGY`, no trade anywhere |
-| 4 | Accounts tab: **Disable** Client B. Send a new **Open market** | acct_a filled, acct_b `skipped` `DISCONNECTED`. **Enable** it again afterwards. |
-| 5 | Click **Open market**, **Send**, then **Send** again without clicking anything else | The second answer says `"replayed": true` and **no second trade** is placed |
-| 6 | **Open market**, change `"volume"` to `5`, **Send** | `HTTP 400` `VOLUME_TOO_LARGE`, nothing placed |
-| 7 | Press **Stop all** (top right), then **Open market**, **Send** | `HTTP 409` `KILL_SWITCH_ON`. **Close strategy** still works. Press **Resume trading** afterwards. |
-| 8 | Strategies tab: untick Master A on gold_scalper, tick Client C. **Open market**, **Send** | Only acct_b and acct_c get the trade |
-| 9 | Make sure Client B has a gold_scalper trade **and** a swing_eur trade (for swing_eur, change `"symbol"` to `"EURUSD"`). Select gold_scalper, **Close strategy**, **Send** | On acct_b only the gold_scalper trade closes. The EURUSD trade stays. |
-
-In MetaTrader, the **Comment** of each trade is its request id, so you can match trades to requests. Close all test trades when you're done.
-
----
-
 ## If something looks wrong
 
 **Copier tab: what each status means**
@@ -308,12 +320,15 @@ In MetaTrader, the **Comment** of each trade is its request id, so you can match
 | --- | --- |
 | **open** | Copied. The copy is open on the client. |
 | **closed** | The copy was closed. `ALREADY_CLOSED_ON_CLIENT` means it had already closed by itself, for example its own SL was hit first. |
-| **skipped** | Not copied, on purpose. The reason says why: `COPIER_PAUSED` (copier OFF), `KILL_SWITCH_ON` (Stop all pressed), `TRADING_OFF` (that account's Trading button is OFF), `DISCONNECTED` (that account is offline), `TOO_OLD_AFTER_RESTART` (the master trade was opened while StakBridge was closed, more than 30 seconds earlier). |
+| **skipped** | Not copied, on purpose. The reason says why: `MASTER_TRADING_OFF` (the master's Trading button is OFF), `KILL_SWITCH_ON` (Stop all pressed), `TRADING_OFF` (that account's Trading button is OFF), `DISCONNECTED` (that account is offline), `TOO_OLD_AFTER_RESTART` (the master trade was opened while StakBridge was closed, more than 30 seconds earlier). |
 | **rejected** | The client's broker refused it. `VOLUME_BELOW_BROKER_MIN` means master lots × multiplier is smaller than that broker allows. `UNKNOWN_SYMBOL` means that broker doesn't know the name: check the Symbol column, then fix the account's **Symbol suffix** or add a **symbol mapping** (Copier tab → **Map symbols**). |
 | **unknown** | No answer from the client yet. StakBridge never sends it twice. If the answer got lost, it finds the copy on the client by itself. |
 | `CLOSE_WAITING` / `CLOSE_FAILED` | The master closed, but the client copy is still open. StakBridge keeps retrying until it closes. |
 | `OPENED_WITHOUT_SLTP` | The client's broker refused the master's SL/TP, so the copy was opened without them. Set them by hand in that program. |
 | `SLTP_FAILED` | An SL/TP change didn't go through on that client |
+| `ORDER_CHANGE_FAILED` | Moving a waiting order on that client to the master's new price/SL/TP didn't go through |
+| `FILL_WAITING` / `CANCEL_WAITING` | The master's order filled / was deleted while that client was offline or its Trading was OFF. It is done as soon as that changes. |
+| `FILL_FAILED` / `CANCEL_FAILED` | Swapping the client's order for the trade, or deleting it, failed. StakBridge keeps retrying. |
 
 **Not copied in this version**
 - Pending orders (Buy Limit, Sell Stop and so on). Only trades that are actually open are copied.
@@ -345,9 +360,86 @@ Start with the smallest lot size and watch the first trades closely.
 
 ---
 
+## Part 8 (optional): The licence and the customer's EXE
+
+This tries the selling side on your own PC: your licence server (the SuperAdmin panel) and a customer's `StakBridge.exe`. Nothing here touches your real accounts in `data\`. About 30 minutes.
+
+### L1: Start the licence server
+
+1. Double-click **`run_panel.bat`**. The first time it installs a few things, then asks you to choose a **SuperAdmin login** (username and password). That is *your* login for the panel.
+2. The browser opens **http://127.0.0.1:5070**. Sign in with that login.
+
+**You should see:** the **Admins** page, empty.
+
+### L2: Create a customer and build their EXE
+
+1. Click **Create Admin**. Fill in a name (e.g. `Test Customer`), a username, an expiry date a month ahead, **Max Client Accounts = 1**. Click **Create Admin**.
+2. **Write down the temporary password** shown. It is shown only once.
+3. Click **Continue to Admin detail**, then **Build EXE**. A log scrolls; it takes 3 to 5 minutes.
+4. Click **Download Test Customer.exe** when it appears. Save it on your Desktop.
+
+### L3: First sign-in
+
+1. Close `run.bat` if it is open (both use port 8000).
+2. Double-click **Test Customer.exe**. A StakBridge window opens (no browser).
+
+**You should see:** "StakBridge for Test Customer" and the username already filled in.
+
+3. Type the temporary password and click **Sign in**.
+
+**You should see:** "Choose a new password". Type the temporary one, then a new one twice. You land on the Accounts tab, and at the top right: `Test Customer · licence until <date>`.
+
+### L4: Client limit
+
+1. Add a master account and one client account (any of your demo accounts; or see the tip below).
+2. Try to add a second client account.
+
+**You should see:** a pop-up "Client account limit reached" with the contact email and WhatsApp button. Under **Client accounts**: `Client accounts: 1 of 1 used`.
+
+> Tip: to try this without touching MetaTrader, close the EXE and start it from a black window (Command Prompt) with the simulated broker:
+> `set STAKBRIDGE_BACKEND=fake` then `"%USERPROFILE%\Desktop\Test Customer.exe"`. Any login number works then.
+
+### L5: The panel sees the PC
+
+In the panel, open the customer (click their name).
+
+**You should see:** under **Registered Devices** one PC, under **Telemetry** the app version and `1 client(s)` (it reports every 15 minutes, and right after sign-in). Under **App Logs**, click **Get Logs**: within about 30 seconds a log file downloads.
+
+### L6: Closing and reopening
+
+1. Close the StakBridge window.
+2. Open Test Customer.exe again.
+
+**You should see:** it opens **already signed in**, with the same accounts. A second double-click while it is open only shows "StakBridge is already running".
+
+### L7: Revoke, expiry and offline
+
+1. In the panel, click **Revoke Admin** (and confirm).
+2. In StakBridge, wait up to 30 minutes, or close and reopen it.
+
+**You should see:** the sign-in screen with "Your sign-in has ended…". Signing in now says "This account has been revoked". In the panel click **Reactivate** and sign in again: everything is back.
+
+3. Close `run_panel.bat`'s window (the licence server stops). In StakBridge, click **Check again** if a bar shows, or reopen it.
+
+**You should see:** at the top right, in yellow: "licence server unreachable, working offline until …" (72 hours). Copying keeps working. Start `run_panel.bat` again afterwards.
+
+> While the licence is not valid (expired or revoked), a red bar says **"Your licence is not active: no new trades are copied"**. Closes and SL/TP changes from the master are still copied, so no client is left in a trade.
+
+### L8: Delete
+
+In the panel, open the customer and click **Delete Admin**. Within 30 minutes (or at the next start) StakBridge signs out with "This account has been deleted by your provider", and that customer's accounts are erased from the PC.
+
+### Free trial and "Forgot password"
+
+These send emails, so they work once the email settings are in place on your real server (see **SERVER_SETUP.md**, Step 2). Then:
+- Open `http://YOUR_SERVER/trial` on your phone, enter a name and email, type the 6-digit code from the email: you get the download link and a username and password by email. A second trial with the same email, or with a new email on the same PC, is refused.
+- On the StakBridge sign-in screen, **Forgot your password?** sends a code to the customer's email and lets them choose a new password.
+
+---
+
 ## Practice without MetaTrader (optional)
 
-Double-click **`run_demo.bat`** instead of `run.bat`. It uses a pretend broker: nothing real is traded, gold always costs 2321.45, and any login works. Its data is kept separately in the `data_fake` folder, with its own password. In this mode you can't trade "by hand" on the master, so use the **Trades** tab with a strategy that only has Master A ticked to place master trades.
+Double-click **`run_demo.bat`** instead of `run.bat`. It uses a pretend broker: nothing real is traded, gold always costs 2321.45, and any login works. Its data is kept separately in the `data_fake` folder, with its own password. In this mode there's no MetaTrader to trade in, so you can look around the screens but not place master trades.
 
 ---
 
@@ -356,11 +448,11 @@ Double-click **`run_demo.bat`** instead of `run.bat`. It uses a pretend broker: 
 Copy this and tick each line as it passes.
 
 ```
-Part 1   [ ] 48 passed
+Part 1   [ ] 322 passed
 Part 4   [ ] all 3 accounts Connected, Trading ON
 Part 5   [ ] Copier shows "Watching acct_a"
 Part 6   [ ] C1  [ ] C2  [ ] C3  [ ] C4  [ ] C5  [ ] C6  [ ] C7  [ ] C8  [ ] C9
 Part 7   Copy open: ____ ms median, ____ ms max (broker ____ ms)
          Copy close: ____ ms median, ____ ms max (broker ____ ms)
-Part 8   [ ] 1  [ ] 2  [ ] 3  [ ] 4  [ ] 5  [ ] 6  [ ] 7  [ ] 8  [ ] 9   (optional)
+Part 8   [ ] L1  [ ] L2  [ ] L3  [ ] L4  [ ] L5  [ ] L6  [ ] L7  [ ] L8   (optional)
 ```

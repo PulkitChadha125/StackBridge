@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{% block title %}SuperAdmin{% endblock %} - StakBridge Control Plane</title>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}" />
+    <script>
+        // Apply the saved appearance before the page paints, so it never flashes the wrong colours.
+        try { var t = localStorage.getItem("stakbridge-panel-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+    </script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+</head>
+<body>
+    {% if session.get('superadmin_authenticated') %}
+    <header class="app-header">
+        <div class="header-top">
+            <h1>
+                <a class="brand" href="{{ url_for('superadmin_web.dashboard') }}">
+                    <img class="brand-logo on-dark" src="{{ url_for('static', filename='thinkstak-logo.png') }}" alt="ThinkStak" />
+                    <img class="brand-logo on-light" src="{{ url_for('static', filename='thinkstak-logo-dark.png') }}" alt="ThinkStak" />
+                    <span class="brand-divider" aria-hidden="true"></span>
+                    <span>SuperAdmin</span>
+                </a>
+            </h1>
+            <div class="header-actions">
+                <div class="theme-switch" role="group" aria-label="Appearance">
+                    <button type="button" data-theme-choice="system" title="System: follow the device setting" aria-label="System appearance"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></button>
+                    <button type="button" data-theme-choice="light" title="Light" aria-label="Light appearance"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg></button>
+                    <button type="button" data-theme-choice="dark" title="Dark" aria-label="Dark appearance"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></button>
+                </div>
+                <a href="{{ url_for('superadmin_web.settings_page') }}"><button type="button" class="btn-secondary">Settings</button></a>
+                <form method="post" action="{{ url_for('superadmin_web.logout') }}">
+                    <button type="submit" class="btn-secondary">Logout ({{ session.get('superadmin_username') }})</button>
+                </form>
+            </div>
+        </div>
+    </header>
+    {% else %}
+    <header class="app-header">
+        <div class="header-top">
+            <span class="brand">
+                <img class="brand-logo on-dark" src="{{ url_for('static', filename='thinkstak-logo.png') }}" alt="ThinkStak" />
+                    <img class="brand-logo on-light" src="{{ url_for('static', filename='thinkstak-logo-dark.png') }}" alt="ThinkStak" />
+            </span>
+            <div class="header-actions">
+                <div class="theme-switch" role="group" aria-label="Appearance">
+                    <button type="button" data-theme-choice="system" title="System: follow the device setting" aria-label="System appearance"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></button>
+                    <button type="button" data-theme-choice="light" title="Light" aria-label="Light appearance"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg></button>
+                    <button type="button" data-theme-choice="dark" title="Dark" aria-label="Dark appearance"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></button>
+                </div>
+            </div>
+        </div>
+    </header>
+    {% endif %}
+
+    <main class="container">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <div class="flash-list">
+                    {% for category, message in messages %}
+                        <div class="flash flash-{{ category }}">{{ message }}</div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </main>
+
+    <script>
+        // A date field only opens its calendar when the small icon at the right
+        // edge is clicked. Open it from a click anywhere in the field instead.
+        document.addEventListener('click', function (event) {
+            var field = event.target;
+            if (field.tagName !== 'INPUT' || field.type !== 'date') {
+                return;
+            }
+            if (field.disabled || field.readOnly || typeof field.showPicker !== 'function') {
+                return;
+            }
+            try {
+                field.showPicker();
+            } catch (err) {
+                // Picker already open, or the browser refused it - the native
+                // icon still works, so there is nothing to fall back to.
+            }
+        });
+    </script>
+    <script>
+        // "Unlimited client accounts" greys out the number box next to it.
+        document.addEventListener('change', function (event) {
+            var toggle = event.target;
+            if (!toggle.matches || !toggle.matches('[data-client-limit-toggle]')) {
+                return;
+            }
+            var input = toggle.form && toggle.form.querySelector('[data-client-limit-input]');
+            if (input) {
+                input.disabled = toggle.checked;
+            }
+        });
+    </script>
+    <script>
+        // Appearance: System (follow the device), Light or Dark. Remembered in this browser.
+        (function () {
+            var KEY = "stakbridge-panel-theme";
+            function apply(choice) {
+                if (choice === "light" || choice === "dark") document.documentElement.dataset.theme = choice;
+                else delete document.documentElement.dataset.theme;
+                try {
+                    if (choice === "light" || choice === "dark") localStorage.setItem(KEY, choice);
+                    else localStorage.removeItem(KEY);
+                } catch (e) {}
+                document.querySelectorAll("[data-theme-choice]").forEach(function (b) {
+                    b.classList.toggle("active", b.dataset.themeChoice === choice);
+                    b.setAttribute("aria-pressed", b.dataset.themeChoice === choice ? "true" : "false");
+                });
+            }
+            var saved = "system";
+            try { saved = localStorage.getItem(KEY) || "system"; } catch (e) {}
+            apply(saved);
+            document.querySelectorAll("[data-theme-choice]").forEach(function (b) {
+                b.addEventListener("click", function () { apply(b.dataset.themeChoice); });
+            });
+        })();
+    </script>
+    <script src="{{ url_for('static', filename='password_toggle.js') }}"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

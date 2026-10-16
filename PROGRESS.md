@@ -1,5 +1,38 @@
 # StakBridge progress notes
 
+## 16 October 2026 (night): licence system (selling StakBridge)
+
+Ported from the ThinkStak Forex CopyTrader licensing (reference: `Suresh Copy Trader`):
+- `superadmin_panel/`: the licence server (SuperAdmin panel), unchanged in behaviour, renamed StakBridge, default port **5070** (5060 is blocked by Chrome). Server scripts `setup_server.bat` etc. and **SERVER_SETUP.md**. `run_panel.bat` runs it on this PC for trying out.
+- `stakbridge/licensing/`: sign-in with username/password, forced password change, forgot password, licence checks with 72 h offline grace (signed, Ed25519), client limit (all accounts except the master's place), telemetry, log requests, one data folder per Admin, deleted Admin erased.
+- No valid licence = no NEW copies (`LICENSE_INACTIVE`); closes and SL/TP still follow.
+- `StakBridge.exe`: `desktop_launcher.py` + `stakbridge/desktop.py` (own window, pywebview), `StakBridge.spec`, `build.bat`, icon in `packaging/`.
+- Without a licence server (run.bat from source) nothing changes: local page password as before.
+- 322 tests pass (43 StakBridge, 14 licence end-to-end against the real panel, 265 panel).
+- Tried for real on this PC: panel in Chrome, Create Admin, **Build EXE** (real PyInstaller), the EXE signing in, password change, client limit pop-up, telemetry, log download, revoke, expiry bar, delete + erase, restart signed in, single copy, offline grace, trial with emailed codes (emails captured, not sent), one trial per PC, forgot password.
+- Not tried: real email sending (needs your SMTP settings), the VPS scripts (`setup_server.bat` needs admin rights on the server), HTTPS.
+
+## 16 October 2026 (evening): limit and stop orders are copied
+
+- A waiting Buy/Sell Limit or Stop on the master is placed on every client (same price, SL/TP, lots x multiplier), moved when the master's is moved, and deleted when it is deleted or expires.
+- When the master's order fills, each client keeps its own fill, or its order is deleted and the trade opened at market. Stop all / master Trading OFF at that moment deletes the client orders instead.
+- Trades tab shows "Buy Limit" etc., master status waiting / open / closed / cancelled. Red "Stop all is ON" bar on every tab.
+- 43 tests pass. Not yet tried on real MT5.
+
+## 16 October 2026 (afternoon): copier-only StakBridge
+
+- **Strategy tags removed completely**: Strategies tab, `/v1/trade`, `/v1/strategies`, API tokens (`run.bat token`), `trading.py`. Old tables are dropped from the database on start.
+- **Every account except the master is a client.** No client list, no copier ON/OFF switch. The master's Trading switch turns copying on/off for all; a client's Trading switch only for that client (`MASTER_TRADING_OFF`, `TRADING_OFF`).
+- **Live Balance / Equity / Open P/L** per account, about once a second (`STAKBRIDGE_STATUS_INTERVAL` now 1 s).
+- **Open MT5** button per account (`POST /v1/accounts/{id}/open-terminal`).
+- **Trades tab** (was Orders): click a trade for a pop-up with each account's result, latency and error.
+- Safety: a MetaTrader logged into a different account than expected now shows `WRONG_ACCOUNT_IN_TERMINAL` and is not traded on (two accounts sharing one MetaTrader).
+- 39 tests pass. Not yet tried on real MT5.
+- Note: in your current `data`, acct_2 (Client1) has an **empty Terminal path**, so it likely shares acct_a's MetaTrader. Give it its own path.
+
+The notes below are from 14 October.
+
+
 Last updated: 14 October 2026, end of day. Continue from **"Tomorrow: start here"**.
 
 ## Where we are

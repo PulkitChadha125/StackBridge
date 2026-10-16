@@ -1,4 +1,4 @@
-"""API tokens, web UI password and sessions, and broker password encryption."""
+"""Web UI password and sessions, and broker password encryption."""
 
 import hashlib
 import hmac
@@ -7,10 +7,6 @@ import secrets
 from pathlib import Path
 
 from cryptography.fernet import Fernet
-
-
-def new_api_token() -> str:
-    return "sb_" + secrets.token_urlsafe(32)
 
 
 def hash_token(token: str) -> str:

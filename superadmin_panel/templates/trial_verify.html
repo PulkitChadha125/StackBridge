@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Verify Your Email{% endblock %}
+{% block content %}
+{% if resend_too_soon %}
+<div class="flash-list">
+    <div class="flash flash-error" id="resendNotice">
+        A code was sent less than a minute ago. You can request a new one in
+        <span id="resendNoticeSeconds">{{ resend_wait }}</span> seconds.
+    </div>
+</div>
+{% endif %}
+<div class="card card-narrow">
+    <h2>Verify Your Email</h2>
+    <p class="muted section-note">
+        Enter the 6-digit code we sent to <strong>{{ email }}</strong>. It expires in a few minutes.
+    </p>
+    <form method="post" action="{{ url_for('trial_signup.verify') }}">
+        <input type="hidden" name="email" value="{{ email }}" />
+        <label>
+            Verification code
+            <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code"
+                   pattern="[0-9]{6}" maxlength="6" required autofocus />
+        </label>
+        <button type="submit">Verify &amp; Start Trial</button>
+    </form>
+    <form method="post" action="{{ url_for('trial_signup.start') }}">
+        <input type="hidden" name="name" value="{{ name }}" />
+        <input type="hidden" name="email" value="{{ email }}" />
+        <p class="muted section-note">
+            Didn't get it? Check spam, or
+            <button type="submit" class="btn-secondary" id="resendCodeBtn"
+                    data-wait="{{ resend_wait|default(0) }}"
+                    {% if resend_wait %}disabled{% endif %}>
+                {% if resend_wait %}Resend code in {{ resend_wait }}s{% else %}Resend code{% endif %}
+            </button>
+        </p>
+    </form>
+</div>
+<script>
+    (function () {
+        const btn = document.getElementById("resendCodeBtn");
+        const notice = document.getElementById("resendNotice");
+        const noticeSeconds = document.getElementById("resendNoticeSeconds");
+        let left = parseInt(btn.dataset.wait, 10) || 0;
+        if (left <= 0) return;
+        const timer = setInterval(function () {
+            left -= 1;
+            if (left > 0) {
+                btn.textContent = "Resend code in " + left + "s";
+                if (noticeSeconds) noticeSeconds.textContent = left;
+                return;
+            }
+            clearInterval(timer);
+            btn.disabled = false;
+            btn.textContent = "Resend code";
+            if (notice) {
+                notice.className = "flash flash-success";
+                notice.textContent = "You can request a new code now.";
+            }
+        }, 1000);
+    })();
+</script>
+{% endblock %}

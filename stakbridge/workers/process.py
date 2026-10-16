@@ -5,10 +5,13 @@ gets its own worker. Commands arrive over a pipe from the gateway, and replies a
 status events go back the same way.
 
 Messages from the gateway:  {"id": int, "cmd": "open"|"close"|"positions"|"close_position"|"modify_position"
-                                            |"watch"|"set_offline"|"shutdown", ...}
+                                            |"modify_order"|"cancel_order"|"fill_order"|"account_info"|"watch"
+                                            |"set_offline"|"fill_pending"|"shutdown", ...}
 Replies to the gateway:     {"id": int, "result": {...}}
 Status events:              {"event": "status", "status": ..., "reason": ..., "info": {...}}
-Position events (copier master only, while watching: config["watch_ms"] or the "watch" command):
+Position events (copier master only, while watching: config["watch_ms"] or the "watch" command).
+Waiting limit/stop orders are included with "pending": True; when one fills it is reported as
+"modified" with "pending": False (a position keeps its order's ticket).
                             {"event": "positions", "kind": "baseline", "positions": [...], "at": perf_counter seconds}
                             {"event": "positions", "kind": "diff", "opened": [...], "closed": [...],
                              "modified": [...], "at": perf_counter seconds}
@@ -93,12 +96,17 @@ def _watch(backend, conn, known: dict | None) -> dict | None:
             return known
     opened = [p for ticket, p in current.items() if ticket not in known]
     closed = [p for ticket, p in known.items() if ticket not in current]
-    modified = [p for ticket, p in current.items()
-                if ticket in known and (p["sl"], p["tp"]) != (known[ticket]["sl"], known[ticket]["tp"])]
+    modified = [p for ticket, p in current.items() if ticket in known and _shape(p) != _shape(known[ticket])]
     if opened or closed or modified:
         conn.send({"event": "positions", "kind": "diff", "opened": opened, "closed": closed, "modified": modified,
                    "at": detected})
     return current
+
+
+def _shape(item: dict) -> tuple:
+    """What the copier follows: SL and TP, and for a waiting order its price and whether it filled."""
+    pending = item.get("pending", False)
+    return pending, item["sl"], item["tp"], item["price"] if pending else None
 
 
 def _run(backend, message: dict, status: str | None) -> dict:
@@ -109,6 +117,10 @@ def _run(backend, message: dict, status: str | None) -> dict:
                 return {"status": "rejected", "reason": "ONLY_FOR_FAKE_BACKEND"}
             backend.set_offline(message["offline"])
             return {"status": "ok"}
+        if cmd == "fill_pending":
+            if not hasattr(backend, "fill_pending"):
+                return {"status": "rejected", "reason": "ONLY_FOR_FAKE_BACKEND"}
+            return backend.fill_pending(message["ticket"])
         # The gateway already skips disconnected accounts; this covers a drop in between.
         if status != "connected":
             return {"status": "skipped", "reason": "DISCONNECTED"}
@@ -122,6 +134,14 @@ def _run(backend, message: dict, status: str | None) -> dict:
             return backend.close_position(message["ticket"])
         if cmd == "modify_position":
             return backend.modify_position(message["ticket"], message["sl"], message["tp"])
+        if cmd == "modify_order":
+            return backend.modify_order(message["ticket"], message["price"], message["sl"], message["tp"])
+        if cmd == "cancel_order":
+            return backend.cancel_order(message["ticket"])
+        if cmd == "fill_order":
+            return backend.fill_order(message["ticket"], message["order"])
+        if cmd == "account_info":
+            return backend.account_info()
         return {"status": "rejected", "reason": f"UNKNOWN_COMMAND: {cmd}"}
     except Exception as exc:  # never let one bad order kill the worker
         traceback.print_exc()

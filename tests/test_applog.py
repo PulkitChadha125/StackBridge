@@ -33,11 +33,14 @@ def test_level_filter_and_clear(bridge):
     wait_until(lambda: [e["message"] for e in logs(bridge)] == ["log cleared"])
 
 
-def test_rejected_trade_is_logged(bridge):
-    bridge.add_account("acct_x", 1111)
-    bridge.wait_connected("acct_x")
-    bridge.add_strategy("s1", max_volume=5, accounts=["acct_x"])
-    bridge.trade("t-1", strategy="s1", volume=0.001)  # below the broker minimum of 0.01
+def test_rejected_copy_is_logged(bridge):
+    bridge.add_account("acct_m", 1111)
+    bridge.add_account("acct_x", 2222)
+    bridge.wait_connected("acct_m", "acct_x")
+    assert bridge.put("/copier", {"masterId": "acct_m", "clients": [
+        {"accountId": "acct_x", "multiplier": 0.01}]}).status_code == 200
+    wait_until(lambda: bridge.get("/copier").json()["watching"])
+    bridge.open_by_hand("acct_m", volume=0.1)  # x0.01 = 0.001 lot, below the broker minimum of 0.01
     wait_until(lambda: any("VOLUME_BELOW_BROKER_MIN" in e["message"] and e["account"] == "acct_x"
                            for e in logs(bridge, "warning")))
 
@@ -47,6 +50,7 @@ def test_folder_and_quoted_terminal_paths_are_cleaned(tmp_path):
     exe = str(tmp_path / "terminal64.exe")
     assert normalize_terminal_path(str(tmp_path)) == exe          # folder -> program inside it
     assert normalize_terminal_path(f'  "{exe}" ') == exe           # "Copy as path" adds quotes
+    assert normalize_terminal_path(f"{exe}.") == exe                # a full stop pasted from a sentence
     assert normalize_terminal_path("") == ""
     assert terminal_path_problem(exe) is None
     assert terminal_path_problem("") is None                       # empty: the default MT5

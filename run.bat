@@ -4,9 +4,8 @@ rem   run.bat           start with real MT5 terminals (data folder: data)
 rem   run.bat fake      start with the simulated broker (data folder: data_fake)
 rem   run.bat test      run the automated tests
 rem   run.bat password  set or reset the web page password
-rem   run.bat token     create an API token for a program that sends trades
 rem   run.bat install   reinstall the Python packages, then start
-rem Add "fake" after password/token to change the demo instead, e.g. run.bat password fake
+rem Add "fake" after password to change the demo instead: run.bat password fake
 setlocal
 cd /d "%~dp0"
 title StakBridge
@@ -21,7 +20,7 @@ if not exist "%PY%" (
   set "NEED_INSTALL=1"
 )
 
-"%PY%" -c "import fastapi, uvicorn, cryptography, pytest" >nul 2>&1
+"%PY%" -c "import fastapi, uvicorn, cryptography, pytest, requests" >nul 2>&1
 if errorlevel 1 set "NEED_INSTALL=1"
 if /i "%MODE%"=="install" set "NEED_INSTALL=1"
 
@@ -50,11 +49,6 @@ if defined FAKE (
 
 if /i "%MODE%"=="password" (
   "%PY%" -m stakbridge set-password
-  pause
-  exit /b
-)
-if /i "%MODE%"=="token" (
-  "%PY%" -m stakbridge create-token --label "created with run.bat"
   pause
   exit /b
 )

@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Start Your Free Trial{% endblock %}
+{% block content %}
+<div class="card card-narrow">
+    <h2>Start Your Free 7-Day Trial</h2>
+    <p class="muted section-note">
+        Enter your name and email - we'll email you a code to verify it, then you can download the app.
+    </p>
+    <form method="post">
+        <label>
+            Name
+            <input type="text" name="name" value="{{ form.name if form else '' }}" required autofocus />
+        </label>
+        <label>
+            Email
+            <input type="email" name="email" value="{{ form.email if form else '' }}" required />
+        </label>
+        <button type="submit">Send Verification Code</button>
+    </form>
+    <p class="muted section-note">Free for 7 days, no credit card required. One trial per device.</p>
+</div>
+{% endblock %}
