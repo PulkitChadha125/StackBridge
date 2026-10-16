@@ -32,9 +32,21 @@ The customer's MetaTrader logins and trades **never** go to your server. It only
 
 ## Step 1 — Make a clean copy of the project
 
-On **your own PC**, double-click **`make_server_package.bat`** in the StakBridge folder.
+On **your own PC**, double-click **`make_server_package.bat`** in the StakBridge folder. It asks:
 
-It creates `server_package\StakBridgeServer\` (and `StakBridgeServer.zip`, the same thing zipped). It contains the whole project **minus everything that belongs to your PC**: your StakBridge data (`data\`, `data_fake\` with your MetaTrader passwords), any local licence database, keys, logins, `.venv` and caches.
+| Type | Packs | Zip |
+| --- | --- | --- |
+| **1** (or just Enter) | **Version 1**, git branch `main` | `server_package\StakBridgeServer-v1.zip` |
+| **2** | **Version 2**, git branch `v2` (client accounts through the StakBridge EA) | `server_package\StakBridgeServer-v2.zip` |
+
+It takes the chosen version's **committed** files, whichever branch you have open, so commit your work first. The server builds your customers' `StakBridge.exe` from these files, so the version you pack is the version they get.
+
+Inside the zip, next to the program files:
+- `START_HERE.txt`: the short steps, for a new server and for an update.
+- `VERSION.txt`: which version and commit it is.
+- `email_defaults.env`: your mailbox settings, so `setup_server.bat` fills them in. It holds the mailbox password: **keep the zip private.**
+
+Never in the zip: your StakBridge data (`data\`, `data_fake\` with your MetaTrader passwords), any licence database, keys, logins, `server_settings.env`, `.venv`, caches and the automated tests.
 
 > **Why the whole project?** The **Build EXE** button builds the customer's `.exe` on the server, so the app's source must be there too. Customers only ever get the finished `.exe`.
 
@@ -42,7 +54,7 @@ It creates `server_package\StakBridgeServer\` (and `StakBridgeServer.zip`, the s
 
 ## Step 2 — Put it on the server
 
-1. Copy `StakBridgeServer.zip` to the server (Remote Desktop copy-paste works).
+1. Copy `StakBridgeServer-v1.zip` to the server (Remote Desktop copy-paste works).
 2. Unzip it so the files are in **`C:\StakBridgeServer\`**.
 3. Install **Python 3.12** from https://www.python.org/downloads/ and tick **"Add python.exe to PATH"** during the install. (Not the Microsoft Store Python.)
 
@@ -124,7 +136,7 @@ On a customer's page you can also: revoke or reactivate them, reset or set their
 
 ## Updating the server later
 
-1. On your PC, double-click `make_server_package.bat`.
+1. On your PC, double-click `make_server_package.bat` and choose the version.
 2. Copy the zip to the server and paste the `StakBridgeServer` folder over `C:\StakBridgeServer` (replace files).
 3. Double-click `restart_server.bat`.
 4. In **Settings**, click **Rebuild Trial EXE**, and rebuild customers' `.exe` files if the app changed.
