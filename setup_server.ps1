@@ -52,7 +52,7 @@ $CaddyTaskName = "StakBridge HTTPS Proxy"
 $CaddyFirewallRuleName = "StakBridge HTTPS Proxy"
 $DefaultPort = 5070
 # Ports reserved for other services on this VPS - never use them for the panel.
-$BlockedPorts = @(5000, 5001, 5050, 8000, 8010)
+$BlockedPorts = @(5000, 5001, 8000, 8010)
 # Ports web browsers refuse to open ("unsafe port"), so the panel and /trial would not load.
 $BrowserBlockedPorts = @(1719, 1720, 1723, 2049, 3659, 4045, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697, 10080)
 

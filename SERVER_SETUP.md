@@ -53,7 +53,7 @@ Double-click **`C:\StakBridgeServer\setup_server.bat`** and click **Yes** on the
 | Question | What to type |
 | --- | --- |
 | SuperAdmin username / password | Your own login for the website (password at least 8 characters, typed twice) |
-| Port for the panel | Press Enter for **5070**. (5050 is refused: the Forex CopyTrader server uses it. 5000, 5001, 8000 and 8010 are refused too.) |
+| Port for the panel | Press Enter for **5070**, or type another free port such as **5050** (only if nothing else uses it any more). 5000, 5001, 8000 and 8010 are refused. |
 | Public server address | Press Enter to accept `http://YOUR_IP:5070`, or type your HTTPS address if you already have one, e.g. `https://stakbridge.thinkstak.com` |
 | Email settings | Already filled in from `email_defaults.env` (`hello@thinkstak.com` on Hostinger, alerts to your Gmail). Answer **y** to "Keep these email settings?" |
 
@@ -72,7 +72,7 @@ Other helpers in the same folder:
 | `setup_https.bat` | Put the panel on your own domain with HTTPS (see below) |
 | `logs\server.log` | Read what went wrong if the panel does not start |
 
-> If the Forex CopyTrader licence server runs on the same VPS, the two stay apart: different folder, different port (5050 vs 5070), different Windows task and firewall rule. Stopping or restarting one never touches the other.
+> If the Forex CopyTrader licence server runs on the same VPS, the two stay apart: different folder, different port (choose one other than the CopyTrader's 5050), different Windows task and firewall rule. Stopping or restarting one never touches the other.
 
 ## Step 4 — HTTPS (recommended)
 
