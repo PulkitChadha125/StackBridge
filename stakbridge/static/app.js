@@ -815,6 +815,8 @@ const accountLabel = (id) => state.accounts.find((a) => a.id === id)?.name || id
 
 function openAccountModal() {
   $("#account-modal").hidden = false;
+  fillTerminalSelect(state.terminals || [], accountForm.elements.terminalPath.value);
+  loadTerminals();
   accountForm.elements.name.focus();
 }
 
@@ -828,6 +830,61 @@ $("#account-modal").addEventListener("click", (e) => {
   if (e.target.id === "account-modal" || e.target.closest("[data-account-close]")) closeAccountModal();
 });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#account-modal").hidden) closeAccountModal(); });
+
+// ---- Terminal path: a drop-down of the MetaTrader 5 terminals found on this PC ----
+
+const OTHER_TERMINAL = "__other";
+const samePath = (a, b) => (a || "").trim().toLowerCase() === (b || "").trim().toLowerCase();
+
+function fillTerminalSelect(terminals, current) {
+  const select = $("#terminal-select");
+  const editing = state.editingAccount;
+  const options = [terminals.length
+    ? '<option value="">Choose a MetaTrader 5...</option>'
+    : '<option value="">No MetaTrader 5 found on this PC: install one, then click Refresh</option>'];
+  for (const t of terminals) {
+    const mine = editing && t.usedById === editing;
+    const other = t.usedById && !mine;
+    const note = mine ? "this account" : other ? `used by ${t.usedByName}` : "new, not used yet";
+    const cls = other ? "term-used" : mine ? "" : "term-new";
+    options.push(`<option value="${esc(t.path)}" class="${cls}"${other ? " disabled" : ""}>${esc(t.name)} (${esc(note)}): ${esc(t.path)}</option>`);
+  }
+  options.push(`<option value="${OTHER_TERMINAL}">Other: type the path myself...</option>`);
+  select.innerHTML = options.join("");
+  const found = terminals.find((t) => samePath(t.path, current));
+  select.value = found ? found.path : current ? OTHER_TERMINAL : "";
+  showTerminalChoice(false);
+}
+
+function showTerminalChoice(focus = true) {
+  const select = $("#terminal-select");
+  const input = accountForm.elements.terminalPath;
+  const other = select.value === OTHER_TERMINAL;
+  input.hidden = !other;
+  if (!other) input.value = select.value;
+  select.className = select.selectedOptions[0]?.className || "";
+  if (other && focus) input.focus();
+}
+
+async function loadTerminals() {
+  const button = $("#terminal-refresh");
+  button.classList.add("spinning");
+  try {
+    const before = state.terminals ? new Set(state.terminals.map((t) => t.path.toLowerCase())) : null;
+    const { terminals } = await api("GET", "/terminals");
+    state.terminals = terminals;
+    fillTerminalSelect(terminals, accountForm.elements.terminalPath.value);
+    const added = before ? terminals.filter((t) => !before.has(t.path.toLowerCase())) : [];
+    if (added.length) flash(`Found new MetaTrader 5: ${added.map((t) => t.name).join(", ")}`, true);
+  } catch (e) {
+    flash(`Could not look for MetaTrader on this PC: ${e.message}`);
+  } finally {
+    button.classList.remove("spinning");
+  }
+}
+
+$("#terminal-select").addEventListener("change", () => showTerminalChoice());
+$("#terminal-refresh").addEventListener("click", loadTerminals);
 
 function startEdit(accountId) {
   const a = state.accounts.find((x) => x.id === accountId);

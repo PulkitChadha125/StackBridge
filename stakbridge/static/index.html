@@ -9,7 +9,7 @@
     try { const t = localStorage.getItem("stakbridge-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch {}
   </script>
   <link rel="icon" href="icon.png">
-  <link rel="stylesheet" href="style.css?v=9">
+  <link rel="stylesheet" href="style.css?v=10">
 </head>
 <body>
   <header>
@@ -156,7 +156,15 @@
             <label>Password <input name="password" type="password" autocomplete="new-password" required></label>
             <label>Server <input name="server" placeholder="e.g. Broker-Demo" required></label>
             <label>Symbol suffix <input name="symbolSuffix" maxlength="16" placeholder="e.g. .m (empty if none)"></label>
-            <label class="wide">Terminal path <input name="terminalPath" placeholder="C:\Program Files\MetaTrader 5\terminal64.exe (or just its folder). One MetaTrader per account."></label>
+            <div class="wide terminal-field">
+              <label for="terminal-select">MetaTrader 5 on this PC</label>
+              <div class="terminal-row">
+                <select id="terminal-select"></select>
+                <button type="button" id="terminal-refresh" title="Look for MetaTrader 5 on this PC again, e.g. after installing a new one">&#8635; Refresh</button>
+              </div>
+              <input name="terminalPath" aria-label="Terminal path" placeholder="C:\Program Files\MetaTrader 5\terminal64.exe (or just its folder)" hidden>
+              <span class="hint"><span class="term-dot new"></span> new: not used by any account yet &nbsp; <span class="term-dot used"></span> already used by another account (one MetaTrader per account)</span>
+            </div>
             <div class="wide actions">
               <button type="submit" class="primary" id="account-submit">Add account</button>
               <button type="button" id="account-cancel">Cancel</button>
@@ -185,6 +193,6 @@
     // If the page script fails while starting, say so instead of showing an empty page.
     window.addEventListener("error", () => { if (document.querySelector("#tabs")?.hidden && document.querySelector("#login")?.hidden) document.querySelector("#load-error").hidden = false; });
   </script>
-  <script src="app.js?v=7"></script>
+  <script src="app.js?v=8"></script>
 </body>
 </html>

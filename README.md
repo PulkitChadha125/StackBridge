@@ -58,7 +58,9 @@ Without a licence server (running from source with `run.bat`, as before) none of
 - **Subtle animations** and **System / Light / Dark** appearance in both StakBridge and the panel.
 - **ThinkStak logo** in the header of both StakBridge and the panel (white in dark mode, dark in light mode).
 - **Email works**: the default mailbox (`hello@thinkstak.com` on Hostinger) is in `email_defaults.env` (kept out of git), used by `run_panel.bat` and `setup_server.bat`. A real test email and a "New trial signup" alert arrived in the owner's Gmail. The panel's **Settings** page has a **Send Test Email** button. Every trial signup emails the owner automatically.
-- 328 automated tests pass.
+- **Terminal path is a drop-down** of every MetaTrader 5 found on this PC (installed programs, `%APPDATA%\MetaQuotes\Terminal\*\origin.txt`, Program Files), with a **Refresh** button. Green = new, not used by any account yet; grey = already used by another account; "Other" lets you type a path.
+- **New app icon** for `StakBridge.exe` and the page icons: the ThinkStak "S" on a dark tile (`packaging/make_icon.py`).
+- 331 automated tests pass.
 - Still to try: the VPS setup (`setup_server.bat` on the server), HTTPS, and limit-order copying on real MetaTrader.
 
 ## How copying works

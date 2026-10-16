@@ -70,7 +70,7 @@
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
 code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
 
-header { display: flex; align-items: center; gap: 24px; padding: 0 20px; height: 52px; background: var(--surface); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 1; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 0 24px; padding: 0 20px; min-height: 52px; background: var(--surface); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 1; }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; white-space: nowrap; }
 .brand-logo { height: 16px; width: auto; }
 /* White logo on dark backgrounds, dark logo on light ones */
@@ -80,7 +80,8 @@ header { display: flex; align-items: center; gap: 24px; padding: 0 20px; height:
 nav { display: flex; gap: 4px; }
 nav button { background: none; border: none; padding: 16px 12px; cursor: pointer; color: var(--muted); font: inherit; border-bottom: 2px solid transparent; }
 nav button.active { color: var(--text); border-bottom-color: var(--accent); }
-.right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+.right { margin-left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px 12px; padding: 8px 0; }
+.brand, nav { flex-shrink: 0; }
 #kill-banner { color: var(--bad); font-weight: 600; }
 
 main { max-width: 1100px; margin: 0 auto; padding: 20px; }
@@ -319,3 +320,17 @@ tr.detail:hover > td { background: var(--sunken); }
   @keyframes sb-drop { from { opacity: 0; } to { opacity: 1; } }
   button:not(:disabled):not(.link):not(.modal-close):hover, button:not(:disabled):active { transform: none; }
 }
+
+/* Terminal path: the MetaTrader 5 terminals found on this PC */
+.terminal-field { display: flex; flex-direction: column; gap: 6px; }
+.terminal-field > label { color: var(--muted); font-size: 13px; }
+.terminal-row { display: flex; gap: 8px; }
+.terminal-row select { flex: 1; min-width: 0; }
+.terminal-row button { white-space: nowrap; }
+#terminal-refresh.spinning { opacity: .6; pointer-events: none; }
+#terminal-select option { color: var(--text); background: var(--surface); font-weight: 400; }
+#terminal-select option.term-new, #terminal-select.term-new { color: var(--ok); font-weight: 600; }
+#terminal-select option.term-used { color: var(--muted); }
+.term-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; vertical-align: middle; }
+.term-dot.new { background: var(--ok); }
+.term-dot.used { background: var(--muted); }

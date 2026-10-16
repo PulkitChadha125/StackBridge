@@ -28,6 +28,7 @@ from .errors import ApiError, RateLimiter
 from .licensing import LicenseError, Licensing, paths as licence_paths
 from .licensing.client import Transport
 from .models import AccountIn, AccountPatch, CopierIn, ForgotIn, LoginIn, PasswordChangeIn, PasswordSetupIn
+from .terminals import find_terminals
 from .security import PasswordCipher, hash_password, hash_token, new_session_token, verify_password
 from .workers import WorkerGone, WorkerManager
 from .workers.backends import TERMINAL_EXE, normalize_terminal_path, terminal_path_problem
@@ -473,7 +474,7 @@ def create_app(settings: Settings | None = None, licence: LicenceOptions | None 
         for other in db.list_accounts():
             if other["id"] != exclude_id and other["terminal_path"].strip().lower() == wanted:
                 where = f"'{terminal_path}'" if wanted else "the default terminal (empty path)"
-                raise ApiError(400, "TERMINAL_IN_USE", f"{where} is already used by account '{other['id']}'")
+                raise ApiError(400, "TERMINAL_IN_USE", f"{where} is already used by {other['name']}")
 
     # ---- licence ----
 
@@ -638,7 +639,7 @@ def create_app(settings: Settings | None = None, licence: LicenceOptions | None 
         path = normalize_terminal_path(account["terminal_path"]) or workers.status(account_id)["info"].get("terminalPath", "")
         if not path:
             raise ApiError(409, "NO_TERMINAL_PATH",
-                           f"no Terminal path is set for {account_id}. Click Edit and fill in the path to {TERMINAL_EXE}")
+                           f"no Terminal path is set for {account['name']}. Click Edit and fill in the path to {TERMINAL_EXE}")
         problem = terminal_path_problem(path)
         if problem:
             raise ApiError(409, "TERMINAL_PATH_INVALID", f"Terminal path: {problem}")
@@ -649,6 +650,18 @@ def create_app(settings: Settings | None = None, licence: LicenceOptions | None 
             raise ApiError(500, "CANNOT_START_TERMINAL", f"could not start {path}: {exc}") from None
         log.info("MetaTrader of %s opened from the web page", account_id, extra={"account": account_id})
         return {"opened": path}
+
+    @v1.get("/terminals")
+    def list_terminals():
+        """The MetaTrader 5 terminals installed on this PC, and which account uses each one."""
+        accounts = db.list_accounts()
+        used_by = {os.path.normcase(os.path.normpath(a["terminal_path"])): a for a in accounts if a["terminal_path"]}
+        out = []
+        for terminal in find_terminals([a["terminal_path"] for a in accounts]):
+            account = used_by.get(os.path.normcase(terminal["path"]))
+            out.append({**terminal, "usedById": account["id"] if account else None,
+                        "usedByName": account["name"] if account else None})
+        return {"terminals": out}
 
     # ---- master trades (Trades tab) ----
 
