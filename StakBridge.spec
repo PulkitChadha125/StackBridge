@@ -42,6 +42,7 @@ if BUILD_SETTINGS:
 hidden_imports = [
     *collect_submodules("uvicorn"),  # uvicorn picks its loop and protocol parts at run time
     "MetaTrader5",  # imported only inside the worker, where it is needed
+    "numpy",  # MetaTrader5 loads numpy from its compiled code, which PyInstaller cannot see
     "win32crypt",
     "win32timezone",
     "webview.platforms.edgechromium",

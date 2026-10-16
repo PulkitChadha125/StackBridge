@@ -17,6 +17,7 @@ Waiting limit/stop orders are included with "pending": True; when one fills it i
                              "modified": [...], "at": perf_counter seconds}
 """
 
+import sys
 import time
 import traceback
 
@@ -26,7 +27,13 @@ RECONNECT_DELAY = 10.0
 
 
 def worker_main(conn, config: dict) -> None:
-    backend = make_backend(config)
+    _give_output_a_home()
+    try:
+        backend = make_backend(config)
+    except Exception as exc:  # e.g. the MetaTrader5 library cannot load: say so instead of crashing in a loop
+        traceback.print_exc()
+        _serve_broken(conn, f"MT5_LIBRARY_FAILED: the MetaTrader5 Python library could not load ({exc})")
+        return
     state = {"status": None, "reason": None, "info": None}
     next_check = 0.0
     last_connect_attempt = -RECONNECT_DELAY
@@ -77,6 +84,30 @@ def worker_main(conn, config: dict) -> None:
         pass  # gateway went away
     finally:
         backend.shutdown()
+
+
+def _give_output_a_home() -> None:
+    """In the windowless EXE a worker has no stdout/stderr, so its first error message would crash it.
+    Its prints and errors go to the daily log file instead (logs\stakbridge-YYYY-MM-DD.log)."""
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    from .. import logfiles
+    from ..licensing import paths
+
+    logfiles.install(paths.device_root() / "logs", capture_output=True)
+
+
+def _serve_broken(conn, reason: str) -> None:
+    """Shows the account as Error with the reason, and refuses every command, until StakBridge stops it."""
+    try:
+        conn.send({"event": "status", "status": "error", "reason": reason, "info": {}})
+        while True:
+            message = conn.recv()
+            if message["cmd"] == "shutdown":
+                return
+            conn.send({"id": message["id"], "result": {"status": "rejected", "reason": reason}})
+    except (EOFError, BrokenPipeError, OSError, KeyboardInterrupt):
+        pass
 
 
 def _watch(backend, conn, known: dict | None) -> dict | None:
