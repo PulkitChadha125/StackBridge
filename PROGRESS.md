@@ -1,5 +1,17 @@
 # StakBridge progress notes
 
+## 17 October 2026: version 1 finished, next is version 2
+
+Version 1 (branch `main`: StakBridge runs one MetaTrader per account on the same PC or server) is complete. Done today:
+- **Automatic symbol matching** (`match_symbol` / `symbol_core` in `stakbridge/workers/backends.py`): when the client's broker has no symbol with the name the copier asks for, it uses its own symbol with the same core name (`XAUUSD.C` → `XAUUSD`, `XAUUSD` → `XAUUSDm`). Mapping and suffix still come first; several matches → the one in Market Watch, otherwise refused with the names listed. The copy row stores the client's real symbol. Tests: `tests/test_symbols.py`.
+- **Zoom** (Ctrl + Plus / Minus / 0, Ctrl + wheel) and **light/dark** remembered through `GET/PUT /v1/preferences` (stored in `app_state`), because the EXE window (pywebview, private mode) wipes browser storage on close and ignores the browser's zoom keys.
+- **Check panel:** hides itself after 8 s when all is OK, ✕ to close, click the account row to show the last check again; fades in and out.
+- **Layout:** full width at any zoom, one-line account rows; narrow window or zoomed in → `.narrow` (set by app.js) lets the buttons wrap.
+- **Minimal redesign** of `style.css`: neutral palette, plain-text row buttons, ON/OFF pills, subtle animations (tab underline, fades), reduced-motion respected.
+- 354 tests pass. Tried in Chrome against the simulated broker; **not yet inside the real EXE window or with real MetaTrader** (symbol matching).
+
+Still to try on real MetaTrader for version 1: limit/stop order copying, symbol matching (master `XAUUSD.C` with an empty suffix → client `XAUUSD`), the new screens in the EXE. Then **version 2** (branch `v2`): the EA hub and the MQL5 client EA, which still needs the same symbol matching written in MQL5.
+
 ## 16 October 2026 (night): licence system (selling StakBridge)
 
 Ported from the ThinkStak Forex CopyTrader licensing (reference: `Suresh Copy Trader`):

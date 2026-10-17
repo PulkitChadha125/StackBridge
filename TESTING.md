@@ -29,7 +29,7 @@ These are already installed on your PC. Each one is logged into its own account:
 
 1. Open the folder `D:\Desktop\python projects\StackBridge`.
 2. Double-click **`run_tests.bat`**. A black window opens. The first time, it installs things, which takes a few minutes.
-3. Wait until it stops. At the bottom you should see **`322 passed`**.
+3. Wait until it stops. At the bottom you should see **`354 passed`**.
 4. Press any key to close the window.
 
 If you see `failed` instead, stop here and send me what the window shows.
@@ -85,6 +85,8 @@ Write down **exactly** how each program spells it. Capitals and dots count. You'
 - **`XAUUSD`**: the plain name. Nothing to do.
 - **`XAUUSD` plus something extra**, like `XAUUSD.m`, `XAUUSDm` or `XAUUSD.x`: the extra part (`.m`, `m`, `.x`) is that account's **suffix**. You'll type it in Part 4.
 - **A completely different name**, like `GOLD` or `GOLD.pro`: you'll tell the copier the name in Part 5, step 5 (**symbol mapping**).
+
+> If you forget a suffix, StakBridge still finds the right symbol by itself in most cases: when the client's broker has no symbol with the master's name, it uses the one with the same name minus the ending (master `XAUUSD.C` → client `XAUUSD`). Setting the suffix is still the surest way.
 
 Do the same for any other symbol you plan to copy, for example EURUSD.
 
@@ -172,7 +174,7 @@ Keep all 3 MetaTrader programs open and logged in while you test. If one closes,
 
    Example: master acct_a calls gold `XAUUSD`, but Client C's broker calls it `GOLD`. On Client C's row, add `XAUUSD` → `GOLD`. Now a gold trade on the master opens `GOLD` on Client C.
 
-   > You don't need a mapping when only the suffix differs (`XAUUSD` vs `XAUUSD.m`). The **Symbol suffix** from Part 4 already handles that. A mapping, when you add one, is used instead of the suffix for that symbol.
+   > You don't need a mapping when only the suffix differs (`XAUUSD` vs `XAUUSD.m`). The **Symbol suffix** from Part 4 already handles that, and if a suffix is missing StakBridge matches the name by itself. A mapping, when you add one, is used instead of the suffix for that symbol. You do need one for a completely different name (`GOLD`), or when a broker has two versions of a symbol (`XAUUSD` and `XAUUSD.pro`) both in Market Watch.
 
 6. Press **Save changes**.
 7. Under the title you should now see a green dot and **Watching acct_a**. If it says the master has Trading OFF, switch acct_a's Trading **ON** in the Accounts tab.
@@ -291,7 +293,15 @@ The pop-up updates by itself. Close it with the **×**, the **Esc** key, or a cl
 
 **You should see:** the client with the mapping opens the **mapped name**, for example `GOLD`. The other client opens the usual name. Both close when you close the master. In the Copier tab, the **Symbol** column shows the name each client used.
 
-> **Practice it even if all your brokers use the same name:** on Client B's row, map `XAUUSD` to the name Client B already uses, for example `XAUUSD.m`. The trade copies normally. Then change the right box to a name that doesn't exist, like `NOTREAL`. A new copy is then **rejected** with `UNKNOWN_SYMBOL`, which proves the mapping is used. Put the right name back and press **Save changes**.
+> **Practice C9 even if all your brokers use the same name:** on Client B's row, map `XAUUSD` to the name Client B already uses, for example `XAUUSD.m`. The trade copies normally. Then change the right box to a name that doesn't exist, like `NOTREAL`. A new copy is then **rejected** with `UNKNOWN_SYMBOL`, which proves the mapping is used. Put the right name back and press **Save changes**.
+
+### C10: Automatic symbol matching (master with a suffix, client without)
+
+**Set up:** this needs a master whose broker adds an ending to gold, for example `XAUUSD.C`, and a client whose broker calls it plain `XAUUSD`. Leave **both** accounts' **Symbol suffix** empty and add **no** mapping for gold.
+
+**Do:** in the master, buy 0.01 `XAUUSD.C`. Then close it.
+
+**You should see:** the client opens **`XAUUSD`** and closes with the master. In the Trades pop-up, the client's row shows the symbol `XAUUSD`. If the client's broker has both `XAUUSD` and, say, `XAUUSD.pro` in Market Watch, the copy is instead **rejected** with a message naming both: add a mapping then.
 
 ---
 
@@ -331,8 +341,8 @@ In the **Copier** tab, look at the boxes above the table:
 | `FILL_FAILED` / `CANCEL_FAILED` | Swapping the client's order for the trade, or deleting it, failed. StakBridge keeps retrying. |
 
 **Not copied in this version**
-- Pending orders (Buy Limit, Sell Stop and so on). Only trades that are actually open are copied.
 - Closing **part** of a trade on the master. The client copy closes fully when the master closes fully.
+- Stop-limit orders while they wait. The trade they open is copied at market.
 
 **The Log tab**
 Click **Log** at the top to see what happened and when: accounts connecting or disconnecting, connection errors, orders a broker refused, copier problems and settings changes. The newest entries are at the top. Use **Errors only** to see only problems. A red **!** appears on the tab when a new error arrives that you haven't seen yet.
@@ -437,6 +447,16 @@ These send emails, so they work once the email settings are in place on your rea
 
 ---
 
+## Part 9: The screen (2 minutes)
+
+These work the same in `run.bat` (browser) and in `StakBridge.exe`.
+
+- **U1 Zoom:** press **Ctrl + Plus** twice: the page grows and a note says "Zoom 125%". **Ctrl + Minus** shrinks it, **Ctrl + 0** goes back to 100%. **Ctrl + mouse wheel** works too. Close and reopen StakBridge: the zoom is the same as before. Do the same with the light/dark switch.
+- **U2 Full width:** zoom out to 80%: the tables still fill the window from side to side and each account stays on one line.
+- **U3 Check panel:** press **Check** on an account. A "Connection OK" panel slides in under it and disappears by itself after about 8 seconds. Click the account's row (not a button): the last check shows again and stays. Click **✕**: it fades away. A check that shows a problem (for example Algo Trading OFF) stays until you close it.
+
+---
+
 ## Practice without MetaTrader (optional)
 
 Double-click **`run_demo.bat`** instead of `run.bat`. It uses a pretend broker: nothing real is traded, gold always costs 2321.45, and any login works. Its data is kept separately in the `data_fake` folder, with its own password. In this mode there's no MetaTrader to trade in, so you can look around the screens but not place master trades.
@@ -448,11 +468,12 @@ Double-click **`run_demo.bat`** instead of `run.bat`. It uses a pretend broker: 
 Copy this and tick each line as it passes.
 
 ```
-Part 1   [ ] 322 passed
+Part 1   [ ] 354 passed
 Part 4   [ ] all 3 accounts Connected, Trading ON
 Part 5   [ ] Copier shows "Watching acct_a"
-Part 6   [ ] C1  [ ] C2  [ ] C3  [ ] C4  [ ] C5  [ ] C6  [ ] C7  [ ] C8  [ ] C9
+Part 6   [ ] C1  [ ] C2  [ ] C3  [ ] C4  [ ] C5  [ ] C5b  [ ] C6  [ ] C7  [ ] C8  [ ] C9  [ ] C10
 Part 7   Copy open: ____ ms median, ____ ms max (broker ____ ms)
          Copy close: ____ ms median, ____ ms max (broker ____ ms)
 Part 8   [ ] L1  [ ] L2  [ ] L3  [ ] L4  [ ] L5  [ ] L6  [ ] L7  [ ] L8   (optional)
+Part 9   [ ] U1  [ ] U2  [ ] U3
 ```

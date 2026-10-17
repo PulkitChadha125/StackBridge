@@ -269,7 +269,18 @@ function tradingButton(a) {
 // The live check: balance and connection details read from MetaTrader at the moment of the click.
 // A check with nothing wrong hides itself after CHECK_HIDE_MS; clicking the account's row shows it again.
 const CHECK_HIDE_MS = 8000;
+const CHECK_ENTER_MS = 260;  // the fade lengths in style.css (.check.entering / .check.leaving)
+const CHECK_LEAVE_MS = 200;
 const lastChecks = {};  // account id -> its last finished check
+
+// The panel's opening tag, fading in or out. The view is redrawn every second, so the animation is
+// started back in time by how long it has already run: a redraw continues it instead of restarting it.
+function checkTag(kind, c) {
+  const since = (t) => Math.round(performance.now() - t);
+  const motion = c.leavingAt ? ["leaving", since(c.leavingAt)]
+    : c.shownAt && since(c.shownAt) < CHECK_ENTER_MS ? ["entering", since(c.shownAt)] : null;
+  return motion ? `<div class="check ${kind} ${motion[0]}" style="animation-delay:-${motion[1]}ms">` : `<div class="check ${kind}">`;
+}
 
 const checkWarnings = (d) => [
   !d.brokerConnected && "MetaTrader has no connection to the broker's server.",
@@ -284,9 +295,9 @@ function renderCheck(a) {
   const c = state.checks[a.id];
   if (!c) return "";
   const id = esc(a.id);
-  if (c.loading) return `<div class="check"><span class="dot connecting"></span>Checking ${esc(a.name)} in MetaTrader…</div>`;
+  if (c.loading) return `${checkTag("", c)}<span><span class="dot connecting"></span>Checking ${esc(a.name)} in MetaTrader…</span></div>`;
   if (c.error) {
-    return `<div class="check bad"><div class="check-head"><b><span class="dot error"></span>Check failed: ${esc(a.name)} did not answer</b>
+    return `${checkTag("bad", c)}<div class="check-head"><b><span class="dot error"></span>Check failed: ${esc(a.name)} did not answer</b>
       <span class="row-actions"><button class="small" data-action="check" data-id="${id}">Try again</button>
       ${checkCloseButton(id)}</span></div>
       <div>${esc(c.error)}</div></div>`;
@@ -294,7 +305,7 @@ function renderCheck(a) {
   const d = c.data;
   const warnings = checkWarnings(d);
   const item = (label, value) => `<div><div class="label">${label}</div><div class="value">${value}</div></div>`;
-  return `<div class="check ${warnings.length ? "warn" : "ok"}">
+  return `${checkTag(warnings.length ? "warn" : "ok", c)}
     <div class="check-head"><b><span class="dot ${warnings.length ? "connecting" : "connected"}"></span>${warnings.length ? "Connected, with a problem" : "Connection OK"}:
       ${esc(d.name || a.name)} · ${esc(d.login)} · ${esc(d.server)}${d.company ? ` · ${esc(d.company)}` : ""}${d.demo ? "" : ` · <span class="status-rejected">REAL MONEY</span>`}</b>
       <span class="row-actions"><span class="sub">checked ${esc(new Date(d.checkedAt).toLocaleTimeString())}</span>
@@ -315,27 +326,42 @@ function renderCheck(a) {
 }
 
 async function runCheck(accountId) {
-  state.checks[accountId] = { loading: true };
+  const showing = state.checks[accountId];
+  const shownAt = showing && !showing.leavingAt ? showing.shownAt : performance.now();  // fade in only if it was not showing
+  state.checks[accountId] = { loading: true, shownAt };
   render();
   try {
-    state.checks[accountId] = { data: await api("GET", `/accounts/${encodeURIComponent(accountId)}/check`) };
+    state.checks[accountId] = { data: await api("GET", `/accounts/${encodeURIComponent(accountId)}/check`), shownAt };
   } catch (e) {
     if (e instanceof Unauthorized) return;
-    state.checks[accountId] = { error: e.message };
+    state.checks[accountId] = { error: e.message, shownAt };
   }
   const result = state.checks[accountId];
   lastChecks[accountId] = result;
   if (result.data && !checkWarnings(result.data).length) {  // problems stay until hidden by hand
-    setTimeout(() => { if (state.checks[accountId] === result) { delete state.checks[accountId]; render(); } }, CHECK_HIDE_MS);
+    setTimeout(() => { if (state.checks[accountId] === result) hideCheck(accountId); }, CHECK_HIDE_MS);
   }
   render();
 }
 
+function hideCheck(accountId) {
+  const c = state.checks[accountId];
+  if (!c || c.leavingAt) return;
+  c.leavingAt = performance.now();
+  render();
+  setTimeout(() => {
+    if (state.checks[accountId] === c) { delete state.checks[accountId]; render(); }
+    c.leavingAt = 0;  // it may be shown again from lastChecks
+  }, CHECK_LEAVE_MS);
+}
+
 // Clicking an account's row shows its last check again (no new check), or hides the one showing.
 function toggleCheck(accountId) {
-  if (state.checks[accountId]) delete state.checks[accountId];
-  else if (lastChecks[accountId]) state.checks[accountId] = lastChecks[accountId];
-  else { runCheck(accountId); return; }
+  if (state.checks[accountId]) { hideCheck(accountId); return; }
+  const last = lastChecks[accountId];
+  if (!last) { runCheck(accountId); return; }
+  Object.assign(last, { shownAt: performance.now(), leavingAt: 0 });
+  state.checks[accountId] = last;
   render();
 }
 
@@ -1019,7 +1045,7 @@ view.addEventListener("click", (e) => {
 
   if (action === "trading") toggleTrading(id, !on);
   if (action === "check") runCheck(id);
-  if (action === "check-hide") { delete state.checks[id]; render(); }
+  if (action === "check-hide") hideCheck(id);
   if (action === "make-master") {
     act(() => saveCopier({ ...savedCopierForm(), masterId: id }),
       `${id} is now the master account. Its trades are copied to every account whose Trading is ON.`);
@@ -1145,9 +1171,16 @@ applyTheme(savedTheme());
 const ZOOM_STEPS = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
 let zoom = 1;
 
+// Page width at this zoom is less than 1250 px: style.css then lets the account buttons wrap. A CSS media
+// query cannot do this, as it ignores the page's own zoom.
+const NARROW_WIDTH = 1250;
+const markNarrow = () => document.documentElement.classList.toggle("narrow", innerWidth / zoom < NARROW_WIDTH);
+addEventListener("resize", markNarrow);
+
 function applyZoom(level) {
   zoom = level;
   document.documentElement.style.zoom = level === 1 ? "" : String(level);
+  markNarrow();
   try { localStorage.setItem(ZOOM_KEY, String(level)); } catch { /* storage blocked */ }
 }
 
@@ -1183,7 +1216,7 @@ document.addEventListener("wheel", (e) => {
   changeZoom(e.deltaY < 0 ? 1 : -1);
 }, { passive: false });
 
-try { applyZoom(Number(localStorage.getItem(ZOOM_KEY)) || 1); } catch { /* storage blocked */ }
+try { applyZoom(Number(localStorage.getItem(ZOOM_KEY)) || 1); } catch { applyZoom(1); }
 
 async function savePreferences(changes) {
   if (!signedIn) return;

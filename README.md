@@ -50,6 +50,15 @@ What the licence does in StakBridge:
 
 Without a licence server (running from source with `run.bat`, as before) none of this applies and the page keeps its own password. With `STAKBRIDGE_LICENSE_SERVER=http://...` set, `run.bat` signs in with the licence too. An `.exe` without a licence server inside refuses to start.
 
+## Progress, 17 October 2026 (version 1 finished)
+
+- **Symbol names are matched automatically.** If a client's broker has no symbol with the master's name, the client picks its own symbol with the same name minus the broker's ending: master `XAUUSD.C` → client `XAUUSD`, `XAUUSD` → `XAUUSDm`, `#XAUUSD` → `XAUUSD.r`. The account's **Symbol suffix** and the Copier tab's **symbol mapping** still come first. If the broker has several matches (say `XAUUSD` and `XAUUSD.pro`), it prefers the one in Market Watch; if that still leaves more than one, the copy is refused and names them, so you add a mapping. The Trades view shows the name the client really used.
+- **Zoom:** Ctrl + Plus / Ctrl + Minus / Ctrl + 0 and Ctrl + mouse wheel, 50% to 200%. The level and the light/dark choice are kept by StakBridge, so the EXE remembers them (its window forgets browser storage when closed).
+- **Account check panel:** a "Connection OK" check hides itself after 8 seconds, ✕ closes it, and clicking the account's row shows the last check again. A check with a problem stays until you close it.
+- **Full-width page** that fills the window at any zoom; each account row is one line.
+- **Minimal look:** neutral colours, plain-text row buttons that brighten on hover, soft ON/OFF pills, thin borders, and small animations (sliding tab underline, fades). Movement is switched off when Windows has animations off.
+- 354 automated tests pass. The new screens were tried in Chrome against the simulated broker, not yet inside the real EXE window.
+
 ## Progress, 16 October 2026
 
 - **Limit and stop orders are copied** while they wait (placed, moved, deleted), and the trade follows when the master's order fills.
@@ -70,15 +79,22 @@ Without a licence server (running from source with `run.bat`, as before) none of
 - **Stop all** blocks new copies on every account. Closes and SL/TP changes still go through, so clients always follow the master out.
 - **Limit and stop orders** are copied while they wait: placed, moved and deleted on the clients together with the master. When the master's order fills, each client gets the trade (its own order if it filled already, otherwise at market). Stop-limit orders are copied once they open a trade.
 - Copies carry magic `990000` and the comment `copy <master ticket>`. Trades you place yourself on a client are never touched.
+- **Symbol names:** a client uses, in this order, its symbol mapping (Copier tab), the suffix rule (master's suffix removed, the client's added), and if that name does not exist on its broker, the broker's symbol with the same core name (`XAUUSD.C` → `XAUUSD`).
+
+## How many accounts on one server
+
+Each account runs its own MetaTrader 5 and a small worker, so RAM usually runs out before CPU. Budget about **350 MB per account** plus 2 GB for Windows, with charts closed and only the traded symbols in Market Watch. Rough guide: 4 vCPU / 8 GB ≈ 12–15 accounts, 8 vCPU / 16 GB ≈ 25–30, 16 vCPU / 32 GB ≈ 50–60. Watch the copy times in the Trades tab while adding accounts and stop when the last client gets noticeably slower, especially during news. Version 2 (clients run the StakBridge EA in their own MetaTrader) removes this limit.
 
 ## Web page
 
 | Tab | What it shows |
 | --- | --- |
-| Accounts | Master and clients with live **Balance, Equity and Open P/L** (about once a second), the Trading switch, and buttons: **Open MT5** (opens that account's MetaTrader window on this PC), Check, Positions, Edit, Disable, Remove |
+| Accounts | Master and clients with live **Balance, Equity and Open P/L** (about once a second), the Trading switch, and buttons: **Open MT5** (opens that account's MetaTrader window on this PC), Check, Positions, Edit, Disable, Remove. Click a row to show or hide its last check |
 | Trades | Every master trade, newest first. Click one for a pop-up showing, per account, whether it was copied, the ticket, open/close latency and any error in plain words |
 | Copier | Master choice, lot multiplier and symbol names per client, latency figures, recent copies |
 | Log | StakBridge's own events: connects, errors, refused orders, settings changes |
+
+Zoom with **Ctrl + Plus / Minus / 0** or **Ctrl + mouse wheel**; the level is remembered.
 
 ## Tests
 
@@ -119,6 +135,7 @@ All under `/v1`, signed in with the session cookie. Requests that change somethi
 - `POST/DELETE /kill`: Stop all / resume
 - `GET /logs?level=info|warning|error`, `DELETE /logs`, `GET /health`
 - `GET/POST/DELETE /session`, `POST /session/setup`: sign-in (with a licence: `{"username", "password"}`)
+- `GET/PUT /preferences`: how the page looks, `{"zoom": 0.5–2, "theme": "system"|"light"|"dark"}` (kept by StakBridge because the EXE window forgets browser storage)
 - With a licence: `POST /session/password` (change), `POST /session/forgot/request|verify|reset`, `GET /license` (`?refresh=true` asks the server now), `GET /launch?token=` (the EXE window's one-time sign-in link)
 
 ## Layout
