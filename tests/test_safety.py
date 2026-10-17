@@ -53,3 +53,14 @@ def test_volume_is_rounded_to_broker_lot_step():
     assert normalize_volume(0.35, 0.1, 50, 0.1) == (0.3, None)
     assert normalize_volume(0.05, 0.1, 50, 0.1) == (None, "VOLUME_BELOW_BROKER_MIN")
     assert normalize_volume(60, 0.1, 50, 0.1) == (None, "VOLUME_ABOVE_BROKER_MAX")
+
+
+def test_page_preferences_are_kept_and_checked(bridge):
+    assert bridge.get("/preferences").json() == {}
+    assert bridge.put("/preferences", {"zoom": 1.25}).json() == {"zoom": 1.25}
+    assert bridge.put("/preferences", {"theme": "dark"}).json() == {"zoom": 1.25, "theme": "dark"}
+    assert bridge.get("/preferences").json() == {"zoom": 1.25, "theme": "dark"}
+    assert bridge.put("/preferences", {"zoom": 9}).status_code == 400
+    assert bridge.put("/preferences", {"theme": "pink"}).status_code == 400
+    bridge.client.cookies.clear()
+    assert bridge.client.get("/v1/preferences").status_code == 401

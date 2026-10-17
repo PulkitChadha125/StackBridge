@@ -1,6 +1,6 @@
 """Request bodies accepted by the API. JSON uses camelCase, Python uses snake_case."""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from pydantic.alias_generators import to_camel
@@ -72,3 +72,9 @@ class ForgotIn(ApiModel):
 
 class PasswordSetupIn(ApiModel):
     password: str = Field(min_length=8, max_length=200)
+
+
+class PreferencesIn(ApiModel):
+    """How the page looks on this PC. Kept by StakBridge because the EXE window forgets browser storage."""
+    zoom: float | None = Field(None, ge=0.5, le=2.0)
+    theme: Literal["system", "light", "dark"] | None = None

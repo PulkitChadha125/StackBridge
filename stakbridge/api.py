@@ -1,6 +1,7 @@
 """FastAPI app: REST endpoints under /v1 and the web UI at /."""
 
 import dataclasses
+import json
 import logging
 import os
 import subprocess
@@ -27,7 +28,8 @@ from .db import Database
 from .errors import ApiError, RateLimiter
 from .licensing import LicenseError, Licensing, paths as licence_paths
 from .licensing.client import Transport
-from .models import AccountIn, AccountPatch, CopierIn, ForgotIn, LoginIn, PasswordChangeIn, PasswordSetupIn
+from .models import (AccountIn, AccountPatch, CopierIn, ForgotIn, LoginIn, PasswordChangeIn, PasswordSetupIn,
+                     PreferencesIn)
 from .terminals import find_terminals
 from .security import PasswordCipher, hash_password, hash_token, new_session_token, verify_password
 from .workers import WorkerGone, WorkerManager
@@ -50,6 +52,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 CONNECTION_FIELDS = {"login", "server", "password", "terminal_path", "enabled"}
 
 PASSWORD_KEY = "ui_password"
+PREFERENCES_KEY = "ui_preferences"
 SESSION_COOKIE = "stakbridge_session"
 SESSION_LIFETIME = timedelta(days=30)
 UI_HEADER = "X-StakBridge"
@@ -689,6 +692,24 @@ def create_app(settings: Settings | None = None, licence: LicenceOptions | None 
         db.clear_logs()
         log.info("log cleared")
         return {"cleared": True}
+
+    # ---- page preferences (zoom, theme) ----
+
+    def preferences() -> dict:
+        try:
+            return json.loads(db.get_state(PREFERENCES_KEY) or "{}")
+        except ValueError:
+            return {}
+
+    @v1.get("/preferences")
+    def get_preferences():
+        return preferences()
+
+    @v1.put("/preferences")
+    def set_preferences(body: PreferencesIn):
+        saved = {**preferences(), **body.model_dump(exclude_none=True)}
+        db.set_state(PREFERENCES_KEY, json.dumps(saved))
+        return saved
 
     # ---- copier ----
 

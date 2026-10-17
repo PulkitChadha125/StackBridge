@@ -346,6 +346,8 @@ class Copier:
 
         if job.kind in OPENING:
             order = job.fields["order"]
+            if result.get("symbol"):  # the client's broker may have found its own name for the symbol
+                row["symbol"] = result["symbol"]
             if status == "rejected" and (reason or "").startswith(INVALID_STOPS) and (order["sl"] or order["tp"]):
                 # This broker refuses the master's SL/TP (too close to its price). Open anyway: missing
                 # the trade is worse. The SL/TP is tried again afterwards and the reason is shown.
@@ -415,6 +417,7 @@ class Copier:
             return
         if status == "filled":  # the client's order is a position now (filled by itself, or opened at market)
             refused = result.get("stopsRefused")
+            row["symbol"] = result.get("symbol") or row["symbol"]
             row.update(status="open", client_ticket=result["ticket"], open_price=result.get("price"),
                        volume=result.get("volume"), sl=result.get("sl") or 0.0, tp=result.get("tp") or 0.0,
                        reason=f"OPENED_WITHOUT_SLTP: {refused}" if refused else None)

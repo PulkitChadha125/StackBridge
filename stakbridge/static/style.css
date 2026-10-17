@@ -215,6 +215,9 @@ h3.section { font-size: 13px; color: var(--muted); text-transform: uppercase; le
 .check.bad { border-color: var(--bad); background: var(--bad-bg); }
 .check-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .check-head .row-actions { display: flex; align-items: center; gap: 4px; }
+.close-x { min-width: 28px; font-weight: 600; }
+tr[data-row] { cursor: pointer; }
+tr[data-row]:hover > td { background: var(--sunken); }
 .check-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px 16px; }
 .check-grid .label { color: var(--muted); font-size: 12px; }
 .check-grid .value { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }

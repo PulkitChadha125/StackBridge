@@ -4,6 +4,7 @@
 const REFRESH_MS = 1000;  // balance, equity and open P/L follow MetaTrader about once a second
 const COPY_MAGIC = 990000;  // magic number the copier puts on every copied position
 const THEME_KEY = "stakbridge-theme";
+const ZOOM_KEY = "stakbridge-zoom";
 const LOG_SEEN_KEY = "stakbridge-log-seen";  // newest error id the user has already seen in the Log tab
 // Required on every browser request that changes something. Other websites cannot add it.
 const UI_HEADERS = { "X-StakBridge": "1" };
@@ -266,6 +267,19 @@ function tradingButton(a) {
 }
 
 // The live check: balance and connection details read from MetaTrader at the moment of the click.
+// A check with nothing wrong hides itself after CHECK_HIDE_MS; clicking the account's row shows it again.
+const CHECK_HIDE_MS = 8000;
+const lastChecks = {};  // account id -> its last finished check
+
+const checkWarnings = (d) => [
+  !d.brokerConnected && "MetaTrader has no connection to the broker's server.",
+  !d.algoTrading && "Algo Trading is OFF in this MetaTrader. Click the Algo Trading button so it turns green, or every order is refused.",
+  !d.accountTradeAllowed && "The broker does not allow trading on this account (read-only/investor password?).",
+].filter(Boolean);
+
+const checkCloseButton = (id) =>
+  `<button class="small close-x" data-action="check-hide" data-id="${id}" title="Hide. Click the account's row to show it again." aria-label="Hide">✕</button>`;
+
 function renderCheck(a) {
   const c = state.checks[a.id];
   if (!c) return "";
@@ -274,22 +288,18 @@ function renderCheck(a) {
   if (c.error) {
     return `<div class="check bad"><div class="check-head"><b><span class="dot error"></span>Check failed: ${esc(a.name)} did not answer</b>
       <span class="row-actions"><button class="small" data-action="check" data-id="${id}">Try again</button>
-      <button class="small" data-action="check-hide" data-id="${id}">Hide</button></span></div>
+      ${checkCloseButton(id)}</span></div>
       <div>${esc(c.error)}</div></div>`;
   }
   const d = c.data;
-  const warnings = [
-    !d.brokerConnected && "MetaTrader has no connection to the broker's server.",
-    !d.algoTrading && "Algo Trading is OFF in this MetaTrader. Click the Algo Trading button so it turns green, or every order is refused.",
-    !d.accountTradeAllowed && "The broker does not allow trading on this account (read-only/investor password?).",
-  ].filter(Boolean);
+  const warnings = checkWarnings(d);
   const item = (label, value) => `<div><div class="label">${label}</div><div class="value">${value}</div></div>`;
   return `<div class="check ${warnings.length ? "warn" : "ok"}">
     <div class="check-head"><b><span class="dot ${warnings.length ? "connecting" : "connected"}"></span>${warnings.length ? "Connected, with a problem" : "Connection OK"}:
       ${esc(d.name || a.name)} · ${esc(d.login)} · ${esc(d.server)}${d.company ? ` · ${esc(d.company)}` : ""}${d.demo ? "" : ` · <span class="status-rejected">REAL MONEY</span>`}</b>
       <span class="row-actions"><span class="sub">checked ${esc(new Date(d.checkedAt).toLocaleTimeString())}</span>
       <button class="small" data-action="check" data-id="${id}">Check again</button>
-      <button class="small" data-action="check-hide" data-id="${id}">Hide</button></span></div>
+      ${checkCloseButton(id)}</span></div>
     <div class="check-grid">
       ${item("Balance", money(d.balance, d.currency))}
       ${item("Equity", money(d.equity, d.currency))}
@@ -313,6 +323,19 @@ async function runCheck(accountId) {
     if (e instanceof Unauthorized) return;
     state.checks[accountId] = { error: e.message };
   }
+  const result = state.checks[accountId];
+  lastChecks[accountId] = result;
+  if (result.data && !checkWarnings(result.data).length) {  // problems stay until hidden by hand
+    setTimeout(() => { if (state.checks[accountId] === result) { delete state.checks[accountId]; render(); } }, CHECK_HIDE_MS);
+  }
+  render();
+}
+
+// Clicking an account's row shows its last check again (no new check), or hides the one showing.
+function toggleCheck(accountId) {
+  if (state.checks[accountId]) delete state.checks[accountId];
+  else if (lastChecks[accountId]) state.checks[accountId] = lastChecks[accountId];
+  else { runCheck(accountId); return; }
   render();
 }
 
@@ -356,7 +379,7 @@ function renderAccounts() {
   const COLS = 8;
 
   const masterBody = master
-    ? `<table><thead>${head}</thead><tbody><tr>
+    ? `<table><thead>${head}</thead><tbody><tr data-row="${esc(master.id)}" title="Click to show or hide the last check">
         ${accountName(master)}${loginCell(master)}<td>${statusCell(master)}</td>
         ${moneyCells(master)}<td>${tradingButton(master)}</td>${accountActions(master)}
       </tr>${accountExtras(master, COLS)}</tbody></table>`
@@ -369,7 +392,7 @@ function renderAccounts() {
     const multiplier = c.clients.find((x) => x.accountId === a.id)?.multiplier ?? 1;
     const badge = master ? ` <span class="badge" title="Lots = master lots × ${esc(multiplier)}. Change it in the Copier tab.">×${esc(multiplier)}</span>` : "";
     const extraButton = master ? "" : `<button class="small" data-action="make-master" data-id="${esc(a.id)}">Make master</button>`;
-    return `<tr>
+    return `<tr data-row="${esc(a.id)}" title="Click to show or hide the last check">
       ${accountName(a, badge)}${loginCell(a)}<td>${statusCell(a)}</td>
       ${moneyCells(a)}<td>${tradingButton(a)}</td>${accountActions(a, extraButton)}
     </tr>${accountExtras(a, COLS)}`;
@@ -615,7 +638,8 @@ function renderSymbolMap(account, client, masterSuffix) {
     </tr>`).join("");
   return `<tr class="detail"><td colspan="5"><div class="symbol-map">
       <p class="hint">Only needed when ${esc(account.name)}'s broker names a symbol differently from the master's broker.
-        Symbols without a row here use the suffix: ${example}.</p>
+        Symbols without a row here use the suffix: ${example}. If that name does not exist there,
+        StakBridge picks the broker's symbol with the same name minus its suffix (XAUUSD.C → XAUUSD).</p>
       ${rows ? `<table><thead><tr><th>Master symbol</th><th></th><th>Symbol on ${esc(account.name)}</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : ""}
       <button class="small" data-action="copier-sym-add" data-id="${id}">+ Add symbol</button>
     </div></td></tr>`;
@@ -983,7 +1007,12 @@ async function toggleTrading(accountId, turnOn) {
 
 view.addEventListener("click", (e) => {
   const el = e.target.closest("[data-action]");
-  if (!el) return;
+  if (!el) {
+    const row = e.target.closest("tr[data-row]");
+    const selecting = String(window.getSelection?.() || "").length > 0;  // selecting text to copy is not a click
+    if (row && !selecting && !e.target.closest("button, a, input, select")) toggleCheck(row.dataset.row);
+    return;
+  }
   const { action, id } = el.dataset;
   const on = el.dataset.on === "true";
   const path = (p) => encodeURIComponent(p);
@@ -1103,8 +1132,71 @@ function applyTheme(choice) {
   document.querySelectorAll("[data-theme-choice]").forEach((b) => b.classList.toggle("active", b.dataset.themeChoice === choice));
 }
 
-document.querySelectorAll("[data-theme-choice]").forEach((b) => b.addEventListener("click", () => applyTheme(b.dataset.themeChoice)));
+document.querySelectorAll("[data-theme-choice]").forEach((b) => b.addEventListener("click", () => {
+  applyTheme(b.dataset.themeChoice);
+  savePreferences({ theme: b.dataset.themeChoice });
+}));
 applyTheme(savedTheme());
+
+// ---------- zoom: Ctrl + Plus / Minus / 0 and Ctrl + mouse wheel ----------
+// The EXE window ignores the browser's own zoom keys and forgets browser storage when closed, so the page
+// zooms itself and StakBridge keeps the level (localStorage is only the copy used before signing in).
+
+const ZOOM_STEPS = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
+let zoom = 1;
+
+function applyZoom(level) {
+  zoom = level;
+  document.documentElement.style.zoom = level === 1 ? "" : String(level);
+  try { localStorage.setItem(ZOOM_KEY, String(level)); } catch { /* storage blocked */ }
+}
+
+function changeZoom(direction) {
+  const next = direction === 0 ? 1
+    : direction > 0 ? ZOOM_STEPS.find((s) => s > zoom + 0.001) ?? zoom
+    : [...ZOOM_STEPS].reverse().find((s) => s < zoom - 0.001) ?? zoom;
+  if (next === zoom) return;
+  applyZoom(next);
+  flash(`Zoom ${Math.round(next * 100)}%${next === 1 ? "" : " (Ctrl + 0 resets it)"}`, true);
+  clearTimeout(changeZoom.timer);
+  changeZoom.timer = setTimeout(() => savePreferences({ zoom: next }), 500);
+}
+
+document.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+  const direction = ["+", "="].includes(e.key) || e.code === "NumpadAdd" ? 1
+    : ["-", "_"].includes(e.key) || e.code === "NumpadSubtract" ? -1
+    : e.key === "0" || e.code === "Numpad0" ? 0 : null;
+  if (direction === null) return;
+  e.preventDefault();
+  changeZoom(direction);
+});
+
+// A touchpad pinch sends many small Ctrl + wheel events: one step per WHEEL_STEP_MS at most.
+const WHEEL_STEP_MS = 150;
+let lastWheelStep = 0;
+document.addEventListener("wheel", (e) => {
+  if (!e.ctrlKey) return;
+  e.preventDefault();
+  if (e.timeStamp - lastWheelStep < WHEEL_STEP_MS) return;
+  lastWheelStep = e.timeStamp;
+  changeZoom(e.deltaY < 0 ? 1 : -1);
+}, { passive: false });
+
+try { applyZoom(Number(localStorage.getItem(ZOOM_KEY)) || 1); } catch { /* storage blocked */ }
+
+async function savePreferences(changes) {
+  if (!signedIn) return;
+  try { await api("PUT", "/preferences", changes); } catch { /* only how the page looks: not worth an error */ }
+}
+
+async function loadPreferences() {
+  try {
+    const prefs = await api("GET", "/preferences");
+    if (prefs.zoom && prefs.zoom !== zoom) applyZoom(prefs.zoom);
+    if (prefs.theme && prefs.theme !== savedTheme()) applyTheme(prefs.theme);
+  } catch { /* keep this browser's own choice */ }
+}
 
 // ---------- sign in, first-time password, sign out ----------
 
@@ -1178,6 +1270,7 @@ const SIGN_IN_ERRORS = {
 function showApp() {
   showScreen(null);
   refresh(true);
+  loadPreferences();
 }
 
 $("#login-form").addEventListener("submit", async (e) => {

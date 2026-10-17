@@ -46,6 +46,35 @@ def normalize_volume(volume: float, vmin: float, vmax: float, step: float) -> tu
     return volume, None
 
 
+def symbol_core(name: str) -> str:
+    """A symbol without its broker decoration: "XAUUSD.C", "XAUUSDm", "#XAUUSD" and "XAUUSD_i" all give
+    "XAUUSD". Trailing small letters (Exness "m", "c") are dropped only after a real name such as XAUUSD."""
+    core = name.strip().lstrip("#.-_!+")
+    for i, char in enumerate(core):
+        if not char.isalnum():
+            core = core[:i]
+            break
+    head = core.rstrip("abcdefghijklmnopqrstuvwxyz")
+    if len(head) >= 3 and head.upper() == head:
+        core = head
+    return core.upper()
+
+
+def match_symbol(name: str, available: list[dict]) -> tuple[str | None, str | None]:
+    """The broker's own name for a symbol from another broker, found by its core name
+    (see symbol_core). available: [{"name", "visible", "tradable"}]. Returns (name, None) or (None, reason)."""
+    core = symbol_core(name)
+    found = [s for s in available if s["tradable"] and symbol_core(s["name"]) == core] if core else []
+    if len(found) > 1:  # several account types on one server: the ones in Market Watch are the ones in use
+        found = [s for s in found if s["visible"]] or found
+    if len(found) == 1:
+        return found[0]["name"], None
+    if not found:
+        return None, f"UNKNOWN_SYMBOL: {name}"
+    names = ", ".join(sorted(s["name"] for s in found))
+    return None, f"UNKNOWN_SYMBOL: {name} (this broker has {names}: add a symbol mapping in the Copier tab)"
+
+
 TERMINAL_EXE = "terminal64.exe"
 
 # MT5 Python errors from initialize(), in words a person can act on.
@@ -96,6 +125,7 @@ class Mt5Backend:
         self.mt5 = mt5
         self.config = config
         self.initialized = False
+        self._symbol_names = {}  # name asked for -> this broker's name, once found
 
     # ---- connection ----
 
@@ -196,9 +226,27 @@ class Mt5Backend:
             return mt5.ORDER_FILLING_IOC
         return mt5.ORDER_FILLING_RETURN
 
+    def _broker_symbol(self, symbol: str) -> tuple[str | None, str | None]:
+        """This broker's name for a symbol: the name itself if it exists, otherwise the one with the same
+        core name (master XAUUSD.C -> XAUUSD here) when the suffix or a mapping was not set."""
+        if symbol in self._symbol_names:
+            return self._symbol_names[symbol], None
+        mt5 = self.mt5
+        if mt5.symbol_info(symbol) is not None:
+            return symbol, None
+        disabled = mt5.SYMBOL_TRADE_MODE_DISABLED
+        available = [{"name": s.name, "visible": s.visible, "tradable": s.trade_mode != disabled}
+                     for s in mt5.symbols_get() or ()]
+        name, reason = match_symbol(symbol, available)
+        if name:
+            self._symbol_names[symbol] = name
+        return name, reason
+
     def open(self, order: dict) -> dict:
         mt5 = self.mt5
-        symbol = order["symbol"]
+        symbol, reason = self._broker_symbol(order["symbol"])
+        if symbol is None:
+            return {"status": "rejected", "reason": reason}
         if not mt5.symbol_select(symbol, True):
             return {"status": "rejected", "reason": f"UNKNOWN_SYMBOL: {symbol}"}
         info = mt5.symbol_info(symbol)
@@ -252,10 +300,10 @@ class Mt5Backend:
             return {"status": "rejected", "reason": f"ORDER_SEND_FAILED: {code} {message}", "elapsedMs": elapsed}
         if result.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_DONE_PARTIAL):
             return {"status": "filled", "ticket": result.order, "price": result.price, "volume": result.volume,
-                    "elapsedMs": elapsed}
+                    "symbol": symbol, "elapsedMs": elapsed}
         if result.retcode == mt5.TRADE_RETCODE_PLACED:
             return {"status": "placed", "ticket": result.order, "price": request["price"], "volume": volume,
-                    "elapsedMs": elapsed}
+                    "symbol": symbol, "elapsedMs": elapsed}
         return {"status": "rejected", "reason": f"BROKER_{result.retcode}: {result.comment}", "elapsedMs": elapsed}
 
     def close(self, magic: int, symbol: str | None) -> dict:
