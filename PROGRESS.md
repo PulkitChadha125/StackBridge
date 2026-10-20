@@ -1,5 +1,13 @@
 # StakBridge progress notes
 
+## 20 October 2026: live accounts are no longer blocked
+
+- `LIVE_ACCOUNT_BLOCKED` and the `STAKBRIDGE_ALLOW_LIVE` setting are removed. Live and demo accounts work the same,
+  no setting needed (same change on v2).
+- Not yet on main (done on v2 only): the EXE's WebView2 check (a VPS without the Microsoft Edge WebView2 Runtime
+  shows only the header) and the DONE-instead-of-PLACED fix for waiting orders.
+- 354 tests pass.
+
 ## 17 October 2026: version 1 finished, next is version 2
 
 Version 1 (branch `main`: StakBridge runs one MetaTrader per account on the same PC or server) is complete. Done today:

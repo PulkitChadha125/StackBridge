@@ -153,7 +153,6 @@ Keep all 3 MetaTrader programs open and logged in while you test. If one closes,
 | `TERMINAL_NOT_REACHED` | That MetaTrader is open but not answering | Close that MetaTrader. StakBridge starts it again within about 10 seconds. |
 | `WRONG_ACCOUNT_IN_TERMINAL` | Two accounts use the same MetaTrader, so they keep logging each other out. StakBridge stops trading on it so no order lands on the wrong account. | Click **Edit** and give each account its own Terminal path (see the table at the top). An **empty** Terminal path means "the default MetaTrader", which is usually acct_a's. |
 | `NETTING_NOT_SUPPORTED` | It's not a hedging account | Open a different demo account |
-| `LIVE_ACCOUNT_BLOCKED` | It's a real-money account | Use a demo account |
 | `ALGO_TRADING_OFF_IN_TERMINAL` | Algo Trading is off in that program | Click **Algo Trading** in MetaTrader so it turns green |
 | `Connecting` for a long time | MetaTrader is still starting | Wait 1 minute. Check the program's connection in its bottom-right corner. |
 
@@ -359,14 +358,7 @@ Close the black window and delete the `data` folder inside the StakBridge folder
 
 ## Real-money accounts
 
-StakBridge refuses real-money accounts on purpose (`LIVE_ACCOUNT_BLOCKED`). Only switch this on **after every test above passes on demo accounts**. Open a Command Prompt in the StakBridge folder and start it like this:
-
-```bat
-set STAKBRIDGE_ALLOW_LIVE=1
-run.bat
-```
-
-Start with the smallest lot size and watch the first trades closely.
+StakBridge works with real-money accounts the same way as demo accounts, with no setting to change. Add them only **after every test above passes on demo accounts**. Start with the smallest lot size and watch the first trades closely.
 
 ---
 

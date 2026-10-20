@@ -151,7 +151,6 @@ class WorkerManager:
             "backend": self.settings.backend,
             "status_interval": self.settings.status_interval,
             "deviation_points": self.settings.deviation_points,
-            "allow_live": self.settings.allow_live,
             "watch_ms": self.settings.copy_poll_ms if watch else None,
         }
 

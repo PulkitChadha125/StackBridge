@@ -113,7 +113,6 @@ All tests run against the simulated broker.
 | `STAKBRIDGE_TRADE_TIMEOUT` | `10` | Seconds to wait for a terminal's answer before a copy shows `unknown` |
 | `STAKBRIDGE_STATUS_INTERVAL` | `1` | Seconds between connection checks; balance, equity and open P/L are read then |
 | `STAKBRIDGE_DEVIATION_POINTS` | `20` | Max slippage for market orders |
-| `STAKBRIDGE_ALLOW_LIVE` | off | Live accounts are refused unless this is `1` |
 | `STAKBRIDGE_COPY_POLL_MS` | `2` | How often the master's positions are checked, in milliseconds |
 | `STAKBRIDGE_COPY_MAX_AGE` | `30` | After a restart, a master position StakBridge missed is copied only if it is at most this many seconds old |
 | `STAKBRIDGE_LICENSE_SERVER` | inside the EXE | Licence server address. Not set and not in the EXE: no licence (local password) |

@@ -154,8 +154,6 @@ class Mt5Backend:
             return self._fail("LOGIN_FAILED: terminal is logged into another account")
         if account.margin_mode != mt5.ACCOUNT_MARGIN_MODE_RETAIL_HEDGING:
             return self._fail("NETTING_NOT_SUPPORTED: only hedging accounts can be used")
-        if account.trade_mode != mt5.ACCOUNT_TRADE_MODE_DEMO and not self.config["allow_live"]:
-            return self._fail("LIVE_ACCOUNT_BLOCKED: set STAKBRIDGE_ALLOW_LIVE=1 to allow live accounts")
         return self.check()
 
     def _fail(self, reason: str) -> dict:
