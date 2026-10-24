@@ -678,10 +678,14 @@ def download_admin_logs(admin_id: str, request_id: str):
         flash("Those logs are not available (not ready yet, or older than 3 days).", "error")
         return redirect(url_for("superadmin_web.admin_detail", admin_id=admin_id))
     device = repositories.get_device(conn, item["device_id"]) if item["device_id"] else None
+    errors_only = request.args.get("only") == "errors"
     safe_username = re.sub(r"[^A-Za-z0-9_.-]", "_", admin["username"] or "admin")
-    name = f"app_log_{safe_username}_{item['date_from']}_to_{item['date_to']}.txt"
+    kind = "app_errors" if errors_only else "app_log"
+    name = f"{kind}_{safe_username}_{item['date_from']}_to_{item['date_to']}.txt"
     return Response(
-        stream_with_context(log_requests.iter_download(item, dict(admin), dict(device) if device else None)),
+        stream_with_context(
+            log_requests.iter_download(item, dict(admin), dict(device) if device else None, errors_only)
+        ),
         mimetype="text/plain",
         headers={"Content-Disposition": f'attachment; filename="{name}"'},
     )

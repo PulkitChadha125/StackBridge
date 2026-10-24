@@ -6,6 +6,7 @@ the network (one test also uses a real HTTP socket). Both sides are the real cod
 
 import json
 import threading
+import gzip
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -358,7 +359,9 @@ def test_the_superadmin_can_download_this_pcs_log(panel, start_app):
                         date.today().isoformat())
     assert app.licensing.check_log_requests()["ok"]
     done = panel.run(log_requests.get_request, request["id"])
-    assert done["status"] == "ready" and done["line_count"] == 2
+    assert done["status"] == "ready" and done["line_count"] == 2 + 3  # then "", the trades header, "No master trades"
+    with gzip.open(log_requests.file_path(request["id"]), "rt", encoding="utf-8") as file:
+        assert file.read().startswith("line one\nline two\n\n==== Trades:")
 
 
 def test_sign_in_over_a_real_http_connection(panel, tmp_path):
@@ -397,3 +400,26 @@ def test_an_ended_sign_in_asks_to_sign_in_again_while_copying_keeps_following(pa
     assert app.login().status_code == 200  # same Admin: the same data, nothing restarted
     assert [a["id"] for a in app.get("/accounts").json()["accounts"]] == ["acct_a"]
     assert app.get("/license").json()["valid"]
+
+
+def test_telemetry_and_logs_show_which_clients_got_each_trade(panel, start_app):
+    admin = panel.create_admin()
+    app = start_app()
+    app.login()
+    copy_setup(app)
+    ticket = master_open(app)
+    wait_until(lambda: [c for o in app.get("/orders").json()["orders"] for c in o["copies"] if c["status"] == "open"])
+
+    assert app.licensing.sync_telemetry()["ok"]
+    trade = panel.run(repo.get_telemetry, admin["id"])["recent_trades"][0]
+    assert trade["clients"] == [{"name": "acct_b", "status": "open", "quantity": 0.1, "reason": None}]
+
+    device = panel.run(repo.list_devices, admin["id"])[0]
+    request = panel.run(log_requests.create_request, admin["id"], device["id"], date.today().isoformat(),
+                        date.today().isoformat())
+    assert app.licensing.check_log_requests()["ok"]
+    assert panel.run(log_requests.get_request, request["id"])["status"] == "ready"
+    with gzip.open(log_requests.file_path(request["id"]), "rt", encoding="utf-8") as file:
+        text = file.read()
+    assert "==== Trades:" in text and f"Master trade #{ticket} on acct_a: buy market 0.1 XAUUSD" in text
+    assert "  -> acct_b - OPEN - 0.1 lots XAUUSD" in text

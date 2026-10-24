@@ -63,3 +63,41 @@ def test_mt5_connection_errors_are_explained():
     assert connect_error(-10003, "IPC initialize failed").startswith("TERMINAL_NOT_STARTED: MetaTrader could not be started")
     assert connect_error(-6, "Terminal: Authorization failed").startswith("LOGIN_FAILED: wrong login, password or server")
     assert connect_error(-1, "something new") == "LOGIN_FAILED: -1 something new"
+
+
+def test_log_downloads_as_csv_and_text(bridge):
+    import csv
+    import io
+
+    bridge.add_account("acct_x", 1111)
+    bridge.wait_connected("acct_x")
+    bridge.post("/kill")  # a warning
+    wait_until(lambda: any("kill switch" in e["message"] for e in logs(bridge, "warning")))
+
+    res = bridge.client.get("/v1/logs/download?format=csv&level=info")
+    assert res.status_code == 200
+    assert 'attachment; filename="stakbridge-log_' in res.headers["content-disposition"]
+    assert res.headers["content-disposition"].endswith('.csv"')
+    assert res.text.startswith("\ufeff")  # Excel reads it as UTF-8
+    rows = list(csv.reader(io.StringIO(res.text.lstrip("\ufeff"))))
+    assert rows[0] == ["Time (this PC)", "Time (UTC)", "Level", "Account", "Account name", "Part", "Message"]
+    connected = next(r for r in rows[1:] if r[3] == "acct_x" and "connected" in r[6])
+    name = next(a["name"] for a in bridge.get("/accounts").json()["accounts"] if a["id"] == "acct_x")
+    assert connected[4] == name and connected[2] == "info"  # the account's name is filled in
+    times = [r[1] for r in rows[1:]]
+    assert times == sorted(times)  # oldest first
+
+    warnings = list(csv.reader(io.StringIO(bridge.client.get("/v1/logs/download?level=warning").text.lstrip("\ufeff"))))
+    assert len(warnings) > 1 and all(r[2] in ("warning", "error", "critical") for r in warnings[1:])
+
+    text = bridge.client.get("/v1/logs/download?format=txt").text
+    assert text.startswith("StakBridge log - ") and "WARNING" in text and "kill switch" in text
+    assert bridge.client.get("/v1/logs/download?format=pdf").status_code == 400
+
+
+def test_csv_cells_are_never_excel_formulas():
+    from stakbridge.applog import export_csv
+
+    text = export_csv([{"at": "2026-10-24T10:00:00.000+00:00", "level": "info", "account": None, "source": "app",
+                        "message": "=HYPERLINK(\"x\")"}], {})
+    assert "'=HYPERLINK" in text

@@ -179,6 +179,8 @@
         Fetch this Admin's App Log from one of their servers, up to {{ log_max_days }} days at a time.
         Their app must be open and logged in on that server: it checks for requests every 30 seconds and
         sends the logs, then the file downloads here. Dates are the Admin PC's local dates.
+        The file ends with every trade of those days and what each client got (apps from version 1.0.1 on).
+        <strong>Errors only</strong> keeps just the warnings, errors and the trades where a client had a problem.
         Files are kept here for 3 days.
     </p>
     {% if active_devices %}
@@ -228,6 +230,7 @@
                 <td>
                     {% if item.downloadable %}
                     <a href="{{ url_for('superadmin_web.download_admin_logs', admin_id=admin.id, request_id=item.id) }}"><button type="button" class="btn-success">Download</button></a>
+                    <a href="{{ url_for('superadmin_web.download_admin_logs', admin_id=admin.id, request_id=item.id, only='errors') }}" title="Only warnings, errors and the trades where a client had a problem"><button type="button" class="btn-danger">Errors only</button></a>
                     {% endif %}
                 </td>
             </tr>
@@ -254,6 +257,7 @@
                 <th>Quantity</th>
                 <th>Status</th>
                 <th>Time</th>
+                <th>Copied to</th>
             </tr>
         </thead>
         <tbody>
@@ -265,9 +269,25 @@
                 <td>{{ trade.quantity }}</td>
                 <td>{{ trade.status }}</td>
                 <td>{{ trade.timestamp }}</td>
+                <td>
+                    {% if trade.clients is not defined %}
+                    <span class="muted">not reported (older app version)</span>
+                    {% elif not trade.clients %}
+                    <span class="muted">no client</span>
+                    {% else %}
+                    <ul class="copy-list">
+                        {% for client in trade.clients %}
+                        {% set problem = client.status in ["rejected", "unknown", "skipped"] or (client.reason and client.reason not in ["ALREADY_CLOSED_ON_CLIENT", "ALREADY_GONE_ON_CLIENT", "FOUND_AFTER_LOST_ANSWER"]) %}
+                        <li{% if problem %} class="copy-problem"{% endif %}>
+                            <strong>{{ client.name }}</strong>: {{ client.status }}{% if client.quantity is not none %}, {{ client.quantity }}{% endif %}{% if client.reason %} - {{ client.reason }}{% endif %}
+                        </li>
+                        {% endfor %}
+                    </ul>
+                    {% endif %}
+                </td>
             </tr>
             {% else %}
-            <tr class="empty-row"><td colspan="6">No recent trades reported.</td></tr>
+            <tr class="empty-row"><td colspan="7">No recent trades reported.</td></tr>
             {% endfor %}
         </tbody>
     </table>

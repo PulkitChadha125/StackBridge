@@ -224,14 +224,15 @@ class Database:
                                 (master_id, *LIVE_MASTER_STATUSES)).fetchall()
         return [row["ticket"] for row in rows]
 
-    def list_master_orders(self, limit: int = 200) -> list[dict]:
+    def list_master_orders(self, limit: int = 200, since: str = "", until: str = "~") -> list[dict]:
+        """The newest master orders with each client's copy. since/until: ISO times (UTC) of opened_at."""
+        chosen = "SELECT * FROM master_orders WHERE opened_at >= ? AND opened_at < ? ORDER BY opened_at DESC LIMIT ?"
         with self._connect() as conn:
-            orders = [dict(row) for row in conn.execute(
-                "SELECT * FROM master_orders ORDER BY opened_at DESC LIMIT ?", (limit,)).fetchall()]
+            orders = [dict(row) for row in conn.execute(chosen, (since, until, limit)).fetchall()]
             copies = conn.execute(
-                "SELECT c.* FROM copies c JOIN (SELECT master_id, ticket FROM master_orders "
-                "ORDER BY opened_at DESC LIMIT ?) o ON c.master_id = o.master_id AND c.master_ticket = o.ticket "
-                "ORDER BY c.client_id", (limit,)).fetchall()
+                f"SELECT c.* FROM copies c JOIN ({chosen.replace('*', 'master_id, ticket', 1)}) o "
+                "ON c.master_id = o.master_id AND c.master_ticket = o.ticket ORDER BY c.client_id",
+                (since, until, limit)).fetchall()
         by_order: dict[tuple, list[dict]] = {}
         for row in copies:
             by_order.setdefault((row["master_id"], row["master_ticket"]), []).append(dict(row))

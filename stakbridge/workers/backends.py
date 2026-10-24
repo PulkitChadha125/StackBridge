@@ -31,6 +31,7 @@ import os
 import time
 
 MAX_COMMENT = 31  # MT5 limit
+POSITION_CLOSED = 10036  # TRADE_RETCODE_POSITION_CLOSED: "Position doesn't exist"
 
 
 def normalize_volume(volume: float, vmin: float, vmax: float, step: float) -> tuple[float | None, str | None]:
@@ -331,6 +332,8 @@ class Mt5Backend:
             })
             if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
                 closed += 1
+            elif result is not None and result.retcode == POSITION_CLOSED and self._find_position(position.ticket) == ():
+                closed += 1  # its own SL/TP closed it a moment before
             else:
                 failures.append({"ticket": position.ticket, "reason": _retcode_text(mt5, result)})
 
@@ -514,6 +517,9 @@ class Mt5Backend:
         elapsed = _ms_since(started)
         if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
             return {"status": "closed", "price": result.price, "volume": result.volume, "elapsedMs": elapsed}
+        if result is not None and result.retcode == POSITION_CLOSED and self._find_position(ticket) == ():
+            # Closed a moment before: the copy has the master's SL/TP, so it is usually hit at the same time.
+            return {"status": "closed", "detail": {"alreadyClosed": True}, "elapsedMs": elapsed}
         return {"status": "rejected", "reason": _retcode_text(mt5, result), "elapsedMs": elapsed}
 
     def modify_position(self, ticket: int, sl: float, tp: float) -> dict:

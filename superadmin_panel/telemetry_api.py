@@ -8,8 +8,9 @@ rationale.
 
 Deliberately does NOT accept or store: broker passwords, passwords, session
 tokens, or full trade request/response payloads - only aggregate counts and
-a small, already-sanitized recent-trades summary (symbol/side/quantity/
-status/action/timestamp).
+a small recent-trades summary (symbol/side/quantity/status/action/timestamp,
+and per trade the clients it was copied to: account name, status, quantity,
+reason). Only those fields are kept.
 """
 
 from __future__ import annotations
@@ -24,6 +25,37 @@ telemetry_api_bp = Blueprint("telemetry_api", __name__, url_prefix="/api/telemet
 MAX_RECENT_TRADES = 20
 MAX_APP_VERSION_LENGTH = 64
 MAX_STATUS_LENGTH = 32
+MAX_CLIENTS_PER_TRADE = 100
+MAX_TEXT_LENGTH = 200
+TRADE_FIELDS = ("symbol", "action", "side", "quantity", "status", "timestamp")
+CLIENT_FIELDS = ("name", "status", "quantity", "reason")
+
+
+def _clean(item: dict, fields: tuple) -> dict:
+    """Only the known fields, as short text or numbers."""
+    out = {}
+    for name in fields:
+        value = item.get(name)
+        if value is None or isinstance(value, (int, float)) and not isinstance(value, bool):
+            out[name] = value
+        else:
+            out[name] = str(value)[:MAX_TEXT_LENGTH]
+    return out
+
+
+def clean_trades(trades) -> list[dict]:
+    if not isinstance(trades, list):
+        return []
+    cleaned = []
+    for trade in trades[:MAX_RECENT_TRADES]:
+        if not isinstance(trade, dict):
+            continue
+        item = _clean(trade, TRADE_FIELDS)
+        clients = trade.get("clients")
+        if isinstance(clients, list):  # apps from before this field send none
+            item["clients"] = [_clean(c, CLIENT_FIELDS) for c in clients[:MAX_CLIENTS_PER_TRADE] if isinstance(c, dict)]
+        cleaned.append(item)
+    return cleaned
 
 
 @telemetry_api_bp.post("/sync")
@@ -36,10 +68,7 @@ def sync_telemetry():
     if error:
         return error
 
-    recent_trades = data.get("recent_trades")
-    if not isinstance(recent_trades, list):
-        recent_trades = []
-    recent_trades = recent_trades[:MAX_RECENT_TRADES]
+    recent_trades = clean_trades(data.get("recent_trades"))
 
     repo.upsert_telemetry(
         conn,

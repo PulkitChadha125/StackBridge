@@ -67,7 +67,8 @@ def _error(result: dict) -> LicenseError:
 class Licensing:
     def __init__(self, server_url: str, folder: Path, public_key: Path, *, transport: Transport | None = None,
                  on_admin: Callable[[str | None], None] = lambda admin_id: None,
-                 snapshot: Callable[[], dict] | None = None, fingerprint: Callable[[], str] = device_fingerprint):
+                 snapshot: Callable[[], dict] | None = None, fingerprint: Callable[[], str] = device_fingerprint,
+                 trade_report: Callable[[date, date], list[str]] | None = None):
         self.server_url = server_url
         self.folder = folder
         self.client = LicenseClient(server_url, transport)
@@ -77,6 +78,7 @@ class Licensing:
         self.fingerprint = fingerprint
         self.on_admin = on_admin  # called with the Admin id after sign-in, None after sign-out
         self.snapshot = snapshot  # telemetry: counts and recent trades, never secrets
+        self.trade_report = trade_report  # lines added after the logs the SuperAdmin asks for: trades per client
         self._state: dict | None = None
         self._lock = threading.RLock()
         self._stop = threading.Event()
@@ -357,6 +359,11 @@ class Licensing:
 
     def _pack_logs(self, first: date, last: date, max_bytes: int) -> tuple[bytes, int, bool]:
         lines = list(logfiles.read_range(self.logs_folder, first, last))
+        if self.trade_report is not None:
+            try:
+                lines += self.trade_report(first, last)
+            except Exception as exc:  # e.g. switching Admins: the log lines still go
+                lines += ["", f"(the trades could not be added: {exc})"]
         truncated = False
         while True:
             content = gzip.compress(("\n".join(lines) + ("\n" if lines else "")).encode("utf-8"))

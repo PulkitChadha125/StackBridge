@@ -17,6 +17,7 @@ from __future__ import annotations
 import base64
 import binascii
 import gzip
+import re
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -43,6 +44,15 @@ MAX_REQUEST_BYTES = 23 * 1024 * 1024
 MAX_MESSAGE_LENGTH = 500
 
 OPEN_STATUSES = ("pending", "picked_up")
+
+# "Errors only" downloads. A log line is "2026-10-08 10:00:00,123 LEVEL ..."; lines without that start
+# (tracebacks) belong to the line above. The app adds a trades section after the log lines
+# (stakbridge/tradereport.py): one block per master trade, client lines needing a look start with "  !! ".
+LOG_LINE = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d[,.]\d{3} (\w+) ")
+PROBLEM_LEVELS = ("WARNING", "ERROR", "CRITICAL")
+TRADES_HEADER = "==== Trades:"
+TRADE_START = "Master trade"
+PROBLEM_MARK = "  !! "
 
 log_request_api_bp = Blueprint("log_request_api", __name__, url_prefix="/api/logs")
 
@@ -230,16 +240,60 @@ def fail(conn, request_id: str, message: str) -> dict[str, Any]:
     return _row(conn, request_id)
 
 
-def iter_download(item: dict[str, Any], admin: dict[str, Any], device: dict[str, Any] | None) -> Iterator[bytes]:
+def problems_only(lines) -> Iterator[str]:
+    """Warnings and errors (with their tracebacks), and the trades where a client had a problem."""
+    keep, in_trades, block, problems = False, False, [], 0
+
+    def finish_block():
+        nonlocal problems
+        if any(line.startswith(PROBLEM_MARK) for line in block):
+            problems += 1
+            yield from block
+
+    for line in lines:
+        line = line.rstrip("\n")
+        if line.startswith(TRADES_HEADER):
+            in_trades = True
+            yield ""
+            yield line
+        elif in_trades:
+            if line.startswith(TRADE_START):
+                yield from finish_block()
+                block = [line]
+            elif block:
+                block.append(line)
+            elif line:
+                yield line  # the section's own notes
+        else:
+            match = LOG_LINE.match(line)
+            if match:
+                keep = match.group(1) in PROBLEM_LEVELS
+            if keep:
+                yield line
+    yield from finish_block()
+    if in_trades and not problems:
+        yield "No trade had a problem on any client."
+
+
+def iter_download(
+    item: dict[str, Any], admin: dict[str, Any], device: dict[str, Any] | None, errors_only: bool = False
+) -> Iterator[bytes]:
     fingerprint = (device or {}).get("device_fingerprint") or "unknown"
     header = (
         f"# StakBridge - App Log of {admin.get('name')} ({admin.get('username')})\n"
         f"# Server (device) {fingerprint[:16]}... - {item['date_from']} to {item['date_to']} "
         f"(dates and times are the Admin PC's local time)\n"
         f"# {item.get('line_count') or 0} line(s)"
-        f"{' - TRUNCATED: only the newest lines fitted' if item.get('truncated') else ''}\n\n"
+        f"{' - TRUNCATED: only the newest lines fitted' if item.get('truncated') else ''}\n"
     )
-    yield header.encode("utf-8")
+    if errors_only:
+        header += "# ERRORS ONLY: warnings, errors and the trades where a client had a problem\n"
+    yield (header + "\n").encode("utf-8")
+    if errors_only:
+        with gzip.open(file_path(item["id"]), "rt", encoding="utf-8", errors="replace") as text:
+            for line in problems_only(text):
+                yield (line + "\n").encode("utf-8")
+        return
     with gzip.open(file_path(item["id"]), "rb") as handle:
         while True:
             chunk = handle.read(256 * 1024)

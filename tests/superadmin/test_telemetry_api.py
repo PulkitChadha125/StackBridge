@@ -110,3 +110,25 @@ def test_sync_response_never_echoes_a_secret_field(client, sa_app):
     # dropped. This documents the intent and would fail loudly (KeyError) if
     # such a field were ever accidentally added to the schema/upsert call.
     assert "meta_token" not in telemetry
+
+
+def test_sync_keeps_the_clients_of_each_trade_and_only_known_fields(client, sa_app):
+    admin, token = _create_admin_and_login(client, sa_app)
+    trade = {"symbol": "XAUUSD", "side": "buy", "quantity": 0.1, "status": "open", "password": "secret",
+             "clients": [{"name": "Client 1", "status": "open", "quantity": 0.2, "reason": None, "login": 5002},
+                         {"name": "Client 2", "status": "rejected", "quantity": 0.1, "reason": "BROKER_10019: No money"},
+                         "not a client"]}
+    client.post("/api/telemetry/sync", json={"token": token, "recent_trades": [trade, {"symbol": "EURUSD"}]})
+
+    with sa_app.app_context():
+        trades = repo.get_telemetry(db.get_db(), admin["id"])["recent_trades"]
+    assert "password" not in trades[0] and "clients" not in trades[1]
+    assert trades[0]["clients"] == [
+        {"name": "Client 1", "status": "open", "quantity": 0.2, "reason": None},
+        {"name": "Client 2", "status": "rejected", "quantity": 0.1, "reason": "BROKER_10019: No money"},
+    ]
+    from .test_superadmin_web import _login
+
+    _login(client)
+    page = client.get(f"/admins/{admin['id']}").get_data(as_text=True)
+    assert "Copied to" in page and "Client 1" in page and "BROKER_10019: No money" in page

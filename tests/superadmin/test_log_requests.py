@@ -177,3 +177,52 @@ def test_old_uploads_are_deleted(client, sa_app, admin_app):
     client.get(f"/admins/{admin['id']}")  # listing purges
     assert not log_requests.file_path(item["id"]).exists()
     assert client.get(item["status_url"]).status_code == 404
+
+
+FULL_LOG = """2026-10-08 10:00:00,000 INFO stakbridge: started
+2026-10-08 10:00:01,000 WARNING stakbridge.copier: copy of master ticket 7 (XAUUSD) on acct_c was rejected: BROKER_10019
+2026-10-08 10:00:02,000 ERROR stakbridge.workers: copier failed
+Traceback (most recent call last):
+  File "x.py", line 1
+2026-10-08 10:00:03,000 INFO stakbridge: all fine again
+
+==== Trades: each master trade and what every client got ====
+Times are this PC's local time. Lines starting with !! need a look.
+
+Master trade #6 on acct_a: buy market 0.1 XAUUSD - now closed (opened 2026-10-08 09:59:00.000)
+     2026-10-08 09:59:00.000 Opened on the master
+  -> Client B (acct_b) - CLOSED - 0.1 lots XAUUSD
+
+Master trade #7 on acct_a: buy market 0.1 XAUUSD - now open (opened 2026-10-08 10:00:01.000)
+     2026-10-08 10:00:01.000 Opened on the master
+  -> Client B (acct_b) - OPEN - 0.1 lots XAUUSD
+  !! Client C (acct_c) - REJECTED - 0.1 lots XAUUSD - reason: BROKER_10019: No money
+"""
+
+
+def test_errors_only_download_keeps_problems_and_failed_trades(client, admin_app):
+    admin, device, token = admin_app
+    item = _request(client, admin, device).get_json()
+    client.post("/api/logs/pending", json={"token": token})
+    assert _upload(client, token, item["id"], text=FULL_LOG, line_count=20).status_code == 200
+
+    full = client.get(item["download_url"]).get_data(as_text=True)
+    assert "all fine again" in full and "Master trade #6" in full
+
+    errors = client.get(item["download_url"] + "?only=errors")
+    assert "app_errors_abc_admin_" in errors.headers["Content-Disposition"]
+    body = errors.get_data(as_text=True)
+    assert "ERRORS ONLY" in body
+    assert "WARNING stakbridge.copier" in body and "ERROR stakbridge.workers" in body
+    assert 'File "x.py", line 1' in body  # the traceback stays with its error
+    assert "started" not in body and "all fine again" not in body
+    assert "Master trade #7" in body and "!! Client C" in body and "-> Client B (acct_b) - OPEN" in body
+    assert "Master trade #6" not in body
+
+    page = client.get(f"/admins/{admin['id']}").get_data(as_text=True)
+    assert "Errors only" in page
+
+
+def test_errors_only_says_when_no_trade_had_a_problem():
+    lines = ["2026-10-08 10:00:00,000 INFO x: ok", "==== Trades: each", "Master trade #1", "  -> A - OPEN"]
+    assert list(log_requests.problems_only(lines)) == ["", "==== Trades: each", "No trade had a problem on any client."]

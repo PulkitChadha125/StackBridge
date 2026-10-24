@@ -832,6 +832,8 @@ function renderLog() {
     <div class="actions">
       <div class="presets">${filters}</div>
       <span class="hint">Newest first. Connection problems, refused orders, copier problems and settings changes are kept here (the newest 5000).</span>
+      <button class="small" data-action="log-download" data-format="csv" title="All kept entries of this filter, for Excel">Download CSV</button>
+      <button class="small" data-action="log-download" data-format="txt" title="All kept entries of this filter, as plain text">Download TXT</button>
       <button class="small" data-action="log-clear">Clear log</button>
     </div>
     ${table}</div>`;
@@ -1080,6 +1082,8 @@ view.addEventListener("click", (e) => {
   }
   if (action === "copier-discard") { state.copierDraft = null; render(); }
   if (action === "log-level") { state.logLevel = el.dataset.level; refresh(true); }
+  // A file download: the page stays where it is (the desktop window asks where to save it).
+  if (action === "log-download") window.location.href = `/v1/logs/download?format=${el.dataset.format}&level=${state.logLevel}`;
   if (action === "log-clear" && window.confirm("Delete every entry in the log?")) act(() => api("DELETE", "/logs"), "Log cleared");
   if (action === "copier-symbols") { state.copierSymbolsOpen = state.copierSymbolsOpen === id ? null : id; render(); }
   if (action === "copier-sym-add") {

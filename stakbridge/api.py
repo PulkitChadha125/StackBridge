@@ -20,11 +20,11 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic.alias_generators import to_camel
 
-from . import __version__
-from .applog import AppLog
+from . import __version__, tradereport
+from .applog import AppLog, export_csv, export_txt
 from .config import Settings, load_settings
 from .copier import Copier
-from .db import Database
+from .db import LOG_KEEP, Database
 from .errors import ApiError, RateLimiter
 from .licensing import LicenseError, Licensing, paths as licence_paths
 from .licensing.client import Transport
@@ -225,8 +225,13 @@ def create_app(settings: Settings | None = None, licence: LicenceOptions | None 
             accounts = found.db.list_accounts()
             master = found.copier.master_id
             watching = found.copier.status()["watching"]
+            names = {a["id"]: a["name"] for a in accounts}
             recent = [{"symbol": o["symbol"], "action": o["order_type"], "side": o["side"], "quantity": o["volume"],
-                       "status": o["status"], "timestamp": o["opened_at"]} for o in found.db.list_master_orders(limit=20)]
+                       "status": o["status"], "timestamp": o["opened_at"],
+                       # where the trade went: account names only, never logins or servers
+                       "clients": [{"name": names.get(c["client_id"], c["client_id"]), "status": c["status"],
+                                    "quantity": c["volume"], "reason": c["reason"]} for c in o["copies"]]}
+                      for o in found.db.list_master_orders(limit=20)]
             enabled = sum(1 for a in accounts if a["enabled"] and a["id"] != master)
             return {
                 "app_version": __version__,
@@ -239,6 +244,7 @@ def create_app(settings: Settings | None = None, licence: LicenceOptions | None 
 
         licensing = Licensing(licence.server_url, licence.folder, licence.public_key, transport=licence.transport,
                               on_admin=switch_admin, snapshot=telemetry_snapshot,
+                              trade_report=lambda first, last: tradereport.report(core().db, first, last),
                               **({"fingerprint": licence.fingerprint} if licence.fingerprint else {}))
 
     @asynccontextmanager
@@ -686,6 +692,19 @@ def create_app(settings: Settings | None = None, licence: LicenceOptions | None 
     @v1.get("/logs")
     def list_logs(limit: int = 200, level: str = "info"):
         return {"logs": db.list_logs(limit=max(1, min(limit, 2000)), level=level)}
+
+    @v1.get("/logs/download")
+    def download_logs(format: str = "csv", level: str = "info"):
+        """Every kept log entry (the newest 5000) at this level, oldest first, as a CSV or text file."""
+        if format not in ("csv", "txt"):
+            raise ApiError(400, "BAD_FORMAT", "format must be csv or txt")
+        names = {a["id"]: a["name"] for a in db.list_accounts()}
+        entries = list(reversed(db.list_logs(limit=LOG_KEEP, level=level)))
+        stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+        return Response(
+            export_csv(entries, names) if format == "csv" else export_txt(entries, names),
+            media_type="text/csv; charset=utf-8" if format == "csv" else "text/plain; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="stakbridge-log_{stamp}.{format}"'})
 
     @v1.delete("/logs")
     def clear_logs():
