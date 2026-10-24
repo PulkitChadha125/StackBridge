@@ -25,9 +25,20 @@ when it arrives, so a slow or hung client never holds up the others or the next 
 Every client copy is tracked by its ticket in the `copies` table, so the copier only ever
 touches positions it opened itself. Manual trades on a client are never touched.
 
+Every copy is mapped: master account + master ticket + client account -> client ticket (the `copies`
+table), and the client position carries the master ticket in its comment ("copy 123"). Every
+copy_check_interval seconds each client's copies are compared with the master: a copy whose master
+trade is gone is closed, wherever it came from (a close that was lost, an open reported as failed that
+went through, a copy marked closed by mistake). A copy of an open master trade that StakBridge had
+lost track of is taken back. Copies are never opened by the check: the price has moved on.
+
 Opens are blocked by the kill switch, by an invalid licence, by the master's Trading switch (for
 all clients) and by a client's own Trading switch (for that client only). Closes and SL/TP changes still go through
-when the master's switch or the kill switch is off, so clients can always follow the master out. A close or SL/TP change that fails (client
+when the master's switch or the kill switch is off, so clients can always follow the master out. Switching a
+client's Trading OFF lets go of its copies (RELEASED): they are no longer closed or changed, and switching it ON
+again starts it fresh with the master's next trades.
+
+Once every client has answered, one log line per master trade lists each client's latency, fastest first. A close or SL/TP change that fails (client
 offline, broker refused) is retried until it succeeds.
 """
 
@@ -46,16 +57,23 @@ COPY_MAGIC = 990_000  # magic number of every copied position, so they are easy 
 INVALID_STOPS = "BROKER_10016"  # TRADE_RETCODE_INVALID_STOPS
 MAX_RETRY_DELAY = 60.0
 COMMANDS = {"open": "open", "place": "open", "close": "close_position", "modify": "modify_position",
-            "find": "positions", "amend": "modify_order", "cancel": "cancel_order", "fill": "fill_order"}
+            "find": "positions", "amend": "modify_order", "cancel": "cancel_order", "fill": "fill_order",
+            "check": "positions", "sweep": "close_position", "sweep_order": "cancel_order"}
 LIVE = ("pending", "placed", "open", "unknown")
 OPENING = ("open", "place")
 # Open orders whose answer was lost for good. The copy is looked up on the client by its comment.
 LOST_ANSWER = ("WORKER_STOPPED", "RESTARTED_WHILE_SENDING")
+# A close with no answer for this long is sent again (MetaTrader stuck). Closing by ticket is safe to repeat.
+STUCK_CLOSE_SECONDS = 60.0
+RELEASED = "RELEASED_TRADING_OFF"  # reason on copies let go when their client's Trading was switched OFF
+# The latency line of a master trade each command belongs to (see _log_latency).
+LATENCY_PHASES = {"open": "open", "place": "open", "fill": "fill", "close": "close", "cancel": "close"}
 
 
 @dataclass
 class _Job:
     kind: str  # "open" | "close" | "modify" | "find", and for waiting orders "place" | "amend" | "cancel" | "fill"
+    # "sweep" | "sweep_order": closing a leftover copy found by the periodic check
     row: dict
     future: Future
     # When the master change was seen. time.perf_counter is one precise clock shared by every process on this PC.
@@ -78,6 +96,7 @@ class Copier:
         self.timeout = settings.trade_timeout
         self.max_age = settings.copy_max_age
         self.retry_interval = settings.copy_retry_interval
+        self.check_interval = settings.copy_check_interval
         # All copier state is changed on this one thread, so no locks are needed. Nothing on it
         # waits for a broker: it only sends commands and handles answers as they arrive.
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="copier")
@@ -92,6 +111,11 @@ class Copier:
         self._failed_stops: dict[tuple, tuple] = {}  # SL/TP the broker refused, not retried until they change
         self._dirty: dict[int, dict] = {}  # rows to save once the commands are out
         self._order_log: list[tuple] = []  # master order events for the Orders tab, saved once the commands are out
+        self._flush_queued = False
+        self._checking: set[str] = set()  # clients whose copies are being read for the periodic check
+        self._reported: set[tuple] = set()  # check findings already logged, so they are not repeated every check
+        self._latency_wait: set[tuple] = set()  # (master ticket, phase) whose latency line waits for every answer
+        self._latency_logged: set[tuple] = set()  # (master ticket, phase) already logged, so retries do not repeat it
         self._running = False
         workers.on_event = self._on_event
         self.reload()
@@ -107,6 +131,7 @@ class Copier:
         """Re-reads accounts and the kill switch. The API calls this after changing either."""
         self._accounts = {a["id"]: a for a in self.db.list_accounts()}
         self._kill = self.db.get_kill_switch()
+        self._submit(self._release_trading_off)
 
     def configure(self, config: dict) -> None:
         def apply():
@@ -116,7 +141,7 @@ class Copier:
                 # Copies of the old master stay in the database and are picked up again if it comes back.
                 self._master_positions = None
                 for state in (self._copies, self._inflight, self._retry_at, self._attempts, self._failed_stops,
-                              self._order_log):
+                              self._order_log, self._latency_wait, self._latency_logged):
                     state.clear()
                 self._load_copies()
 
@@ -314,6 +339,10 @@ class Copier:
             future = handle.send(COMMANDS[kind], **fields)
         job = _Job(kind, row, future, at, time.perf_counter(), fields)
         self._inflight[_key(row)] = job
+        if kind in LATENCY_PHASES:
+            phase = (row["master_ticket"], LATENCY_PHASES[kind])
+            if phase not in self._latency_logged:
+                self._latency_wait.add(phase)
         future.add_done_callback(lambda _, j=job: self._answered(j))
 
     def _answered(self, job: _Job) -> None:
@@ -327,7 +356,12 @@ class Copier:
         row = job.row
         if self._inflight.get(_key(row)) is job:
             del self._inflight[_key(row)]
-        self._apply(job, _outcome(job.future))
+        result = _outcome(job.future)
+        if row["status"] == "released":  # Trading was switched OFF meanwhile: the answer is only noted
+            if job.kind in OPENING and result.get("ticket"):
+                row["client_ticket"] = result["ticket"]
+        else:
+            self._apply(job, result)
         self._dirty[id(row)] = row
         if job.timed_out:
             log.warning("late %s reply from %s for master ticket %s", job.kind, row["client_id"], row["master_ticket"],
@@ -335,7 +369,8 @@ class Copier:
         if self._copies.get(row["master_ticket"], {}).get(row["client_id"]) is row:
             # The master may have closed or moved its SL/TP while this command was on its way.
             self._follow_master(row, time.perf_counter(), retrying=False)
-        self._flush()
+        self._log_latency(row["master_ticket"])
+        self._flush_soon()
         self._forget_finished()
 
     def _apply(self, job: _Job, result: dict) -> None:
@@ -383,6 +418,8 @@ class Copier:
             self._apply_find(row, result)
         elif job.kind in ("amend", "cancel", "fill"):
             self._apply_order(job, result, took)
+        elif job.kind in ("sweep", "sweep_order"):
+            self._apply_sweep(job, result, took)
         elif job.kind == "close":
             if status == "closed":
                 already = (result.get("detail") or {}).get("alreadyClosed")
@@ -476,9 +513,18 @@ class Copier:
     # ---- retries ----
 
     def _retry_loop(self) -> None:
+        # Retries and checks have their own timers, so a check every second is not held to the retry pace.
+        now = time.monotonic()
+        next_retry, next_check = now + self.retry_interval, now + self.check_interval
         while self._running:
-            time.sleep(self.retry_interval)
-            self._submit(self._retry_and_flush)
+            time.sleep(max(0.0, min(next_retry, next_check) - time.monotonic()))
+            now = time.monotonic()
+            if now >= next_retry:
+                next_retry = now + self.retry_interval
+                self._submit(self._retry_and_flush)
+            if now >= next_check:
+                next_check = now + self.check_interval
+                self._submit(self._check)
 
     def _retry_and_flush(self) -> None:
         self._retry()
@@ -488,7 +534,8 @@ class Copier:
         """Marks overdue answers, finds lost opens, closes copies whose master is gone and re-syncs SL/TP."""
         now, at = time.perf_counter(), time.perf_counter()
         for job in list(self._inflight.values()):
-            if not job.timed_out and now - job.sent_at > self.timeout:
+            # done_at: the answer has arrived and only waits for this thread, so it is not late.
+            if not job.timed_out and job.done_at is None and now - job.sent_at > self.timeout:
                 # Never resend a command whose outcome is unknown. Show it and wait for the late answer.
                 job.timed_out = True
                 if job.kind in OPENING:
@@ -507,6 +554,178 @@ class Copier:
                 else:
                     self._follow_master(row, at, retrying=True)
 
+    # ---- periodic check: every client's copies against the master ----
+
+    def _check(self) -> None:
+        """Asks every client for the copies it holds; _checked compares them with the master."""
+        if self._master_positions is None:
+            return
+        now = time.perf_counter()
+        for job in list(self._inflight.values()):
+            if job.kind == "close" and job.timed_out and job.done_at is None and now - job.sent_at > STUCK_CLOSE_SECONDS:
+                del self._inflight[_key(job.row)]  # the retry sends it again; a late answer is still handled
+        for client in self._clients():
+            client_id = client["accountId"]
+            handle = self.workers.get(client_id)
+            if client_id in self._checking or handle is None or self._skip_reason(client_id, opening=False):
+                continue
+            self._checking.add(client_id)
+            future = handle.send(COMMANDS["check"], magic=COPY_MAGIC)
+            future.add_done_callback(lambda f, c=client_id, m=self.master_id: self._submit(self._checked, c, m, f))
+
+    def _checked(self, client_id: str, master_id: str, future: Future) -> None:
+        self._checking.discard(client_id)
+        result = _outcome(future)
+        if master_id != self.master_id or self._master_positions is None or result.get("status") != "ok":
+            return
+        for item in result["positions"]:
+            self._check_copy(client_id, item, pending=False)
+        for item in result.get("orders", []):
+            self._check_copy(client_id, item, pending=True)
+        self._flush()
+
+    def _check_copy(self, client_id: str, item: dict, pending: bool) -> None:
+        """One copy found on a client. It is matched to its master trade by the master ticket in its
+        comment, or by its own ticket if the broker changed the comment."""
+        master_ticket = _master_ticket(item.get("comment") or "")
+        row = None
+        if master_ticket is not None:
+            row = self._copies.get(master_ticket, {}).get(client_id) or \
+                self.db.find_copy(self.master_id, client_id, master_ticket=master_ticket)
+        if row is None:
+            row = next((r for rows in self._copies.values() for r in rows.values()
+                        if r["client_id"] == client_id and r["client_ticket"] == item["ticket"]), None) or \
+                self.db.find_copy(self.master_id, client_id, client_ticket=item["ticket"])
+        if row is None:  # e.g. a copy of an earlier master: not this master's to close
+            self._report_once(("untracked", client_id, item["ticket"]), client_id,
+                              "%s holds copy ticket %s (%s) that is not from master %s: left alone",
+                              client_id, item["ticket"], item.get("comment"), self.master_id)
+            return
+        if row["status"] == "released":
+            return  # let go when its client's Trading was switched OFF: no longer StakBridge's to close
+        if _key(row) in self._inflight:
+            return  # a command for this copy is on its way; its answer settles it
+        master = self._master_positions.get(row["master_ticket"])
+        tracked = row["status"] in ("open", "placed") and row["client_ticket"] == item["ticket"]
+        at = time.perf_counter()
+        if tracked:
+            if self._copies.get(row["master_ticket"], {}).get(client_id) is not row:
+                self._copies.setdefault(row["master_ticket"], {})[client_id] = row
+                self._follow_master(row, at, retrying=False)
+            return  # the normal close and its retries look after it
+        if master is None:
+            # The master's trade is gone but this copy is still on the client: close it.
+            row["_check_was"] = row["status"] + (f" {row['reason']}" if row["reason"] else "")
+            self._send("sweep_order" if pending else "sweep", row, at, ticket=item["ticket"])
+        elif not pending and not master.get("pending") and row["status"] not in ("open", "placed"):
+            # The master's trade is open and so is this copy, but StakBridge had lost track of it.
+            was = row["status"] + (f" {row['reason']}" if row["reason"] else "")
+            # An open whose answer was lost is expected to turn up: the same outcome as the lookup in _apply_find.
+            lost = row["status"] == "unknown" and row["reason"] in LOST_ANSWER
+            row.update(status="open", client_ticket=item["ticket"], open_price=item.get("price"),
+                       volume=item.get("volume"), sl=item.get("sl") or 0.0, tp=item.get("tp") or 0.0,
+                       reason="FOUND_AFTER_LOST_ANSWER" if lost else f"FOUND_BY_CHECK (was {was})")
+            self._copies.setdefault(row["master_ticket"], {})[client_id] = row
+            self._dirty[id(row)] = row
+            if not lost:
+                log.warning("copy of master ticket %s on %s (ticket %s) was open but recorded as %s: following it "
+                            "again", row["master_ticket"], client_id, item["ticket"], was, extra={"account": client_id})
+            self._follow_master(row, at, retrying=False)
+        elif row["status"] in ("open", "placed"):
+            self._report_once(("duplicate", client_id, item["ticket"]), client_id,
+                              "%s holds a second copy (ticket %s) of master ticket %s, which is still open: left alone",
+                              client_id, item["ticket"], row["master_ticket"])
+
+    def _apply_sweep(self, job: _Job, result: dict, took: float | None) -> None:
+        """Answer to closing a leftover copy found by the check."""
+        row, ticket = job.row, job.fields["ticket"]
+        was = row.pop("_check_was", "")
+        status, detail = result["status"], result.get("detail") or {}
+        if status not in ("closed", "cancelled"):
+            if status != "filled":  # an order that filled meanwhile is closed by the next check
+                self._report_once(("sweep", _key(row), result.get("reason")), row["client_id"],
+                                  "closing the leftover copy %s of master ticket %s on %s failed, tried again at "
+                                  "the next check: %s", ticket, row["master_ticket"], row["client_id"],
+                                  result.get("reason"))
+            return
+        if detail.get("alreadyClosed") or detail.get("alreadyGone"):
+            return  # closed in between, nothing was left over
+        log.warning("copy of master ticket %s on %s (ticket %s) was still open after the master closed it (recorded "
+                    "as %s): closed now", row["master_ticket"], row["client_id"], ticket, was,
+                    extra={"account": row["client_id"]})
+        if row["status"] not in ("open", "placed") or row["client_ticket"] in (None, ticket):
+            row.update(status="closed" if job.kind == "sweep" else "cancelled", client_ticket=ticket,
+                       reason=f"CLOSED_BY_CHECK (was {was})", close_price=result.get("price"), close_ms=took,
+                       broker_close_ms=result.get("elapsedMs"))
+
+    # ---- Trading switched OFF on a client ----
+
+    def _release_trading_off(self) -> None:
+        """Lets go of every copy on a client whose Trading switch is OFF: no close or SL/TP change is sent
+        for them any more, and switching Trading ON again starts the client fresh with new trades."""
+        released: dict[str, int] = {}
+        for rows in self._copies.values():
+            for row in rows.values():
+                account = self._accounts.get(row["client_id"])
+                if account is None or account["trading_on"] or row["status"] not in LIVE:
+                    continue
+                key = _key(row)
+                for state in (self._retry_at, self._attempts, self._failed_stops):
+                    state.pop(key, None)
+                row.update(status="released", reason=RELEASED)
+                self._dirty[id(row)] = row
+                released[row["client_id"]] = released.get(row["client_id"], 0) + 1
+        for client_id, count in released.items():
+            log.info("Trading switched OFF on %s: its %d copies are no longer followed (no close or SL/TP change); "
+                     "switching Trading ON starts it fresh with the master's next trades", self._name(client_id),
+                     count, extra={"account": client_id})
+        if released:
+            self._flush()
+
+    # ---- latency log ----
+
+    def _log_latency(self, master_ticket: int) -> None:
+        """Once no command for this master trade is on its way, logs every client's latency, fastest first."""
+        rows = list(self._copies.get(master_ticket, {}).values())
+        if any(_key(row) in self._inflight for row in rows):
+            return
+        for phase, field_name, words in (("open", "open_ms", "copied to"), ("fill", "open_ms", "filled on"),
+                                         ("close", "close_ms", "closed on")):
+            if (master_ticket, phase) not in self._latency_wait:
+                continue
+            self._latency_wait.discard((master_ticket, phase))
+            self._latency_logged.add((master_ticket, phase))
+            done, problems = [], []
+            for row in rows:
+                name, status, reason = self._name(row["client_id"]), row["status"], row["reason"] or ""
+                if status == "released":
+                    continue
+                if phase == "close" and status in ("open", "placed"):
+                    problems.append(f"{name} not closed yet ({reason or 'waiting'})")
+                elif status in ("skipped", "rejected", "unknown"):
+                    if phase != "close":
+                        problems.append(f"{name} {'not copied' if status == 'skipped' else 'failed'} ({reason})")
+                elif row.get(field_name) is not None:
+                    done.append((row[field_name], name))
+            if not done and not problems:
+                continue
+            done.sort()
+            text = f"Master trade #{master_ticket} {words} {len(done)} of {len(done) + len(problems)} clients"
+            if done:
+                text += (f" - fastest {_ms(done[0][0])} ms ({done[0][1]}), slowest {_ms(done[-1][0])} ms "
+                         f"({done[-1][1]}): " + ", ".join(f"{name} {_ms(ms)} ms" for ms, name in done))
+            if problems:
+                text += "; " + "; ".join(problems)
+            log.log(logging.WARNING if problems else logging.INFO, text, extra={"account": self.master_id})
+
+    def _name(self, account_id: str) -> str:
+        return (self._accounts.get(account_id) or {}).get("name") or account_id
+
+    def _report_once(self, key: tuple, account: str, message: str, *args) -> None:
+        if key not in self._reported:
+            self._reported.add(key)
+            log.warning(message, *args, extra={"account": account})
+
     def _schedule_retry(self, row: dict) -> None:
         key = _key(row)
         self._attempts[key] = self._attempts.get(key, 0) + 1
@@ -520,14 +739,24 @@ class Copier:
                 continue
             if all(row["status"] not in LIVE for row in self._copies[master_ticket].values()):
                 del self._copies[master_ticket]
+                for phase in ("open", "fill", "close"):
+                    self._latency_wait.discard((master_ticket, phase))
+                    self._latency_logged.discard((master_ticket, phase))
 
     # ---- helpers ----
 
     def _flush(self) -> None:
-        """Saves changed rows. Called after the commands are sent, so the disk never delays an order."""
+        """Saves changed rows in one go. Called after the commands are sent, so the disk never delays an order."""
+        self._flush_queued = False
         rows, self._dirty = list(self._dirty.values()), {}
-        for row in rows:
-            self.db.save_copy(row)
+        if rows:
+            self.db.save_copies(rows)
+
+    def _flush_soon(self) -> None:
+        """Saves after the answers already waiting are handled: a burst of answers is one write, not one each."""
+        if not self._flush_queued:
+            self._flush_queued = True
+            self._submit(self._flush)
 
     def _save_order_log(self) -> None:
         events, self._order_log = self._order_log, []
@@ -548,6 +777,7 @@ class Copier:
                 row["reason"] = "RESTARTED_WHILE_SENDING"  # its late answer can no longer arrive
                 self.db.save_copy(row)
             self._copies.setdefault(row["master_ticket"], {})[row["client_id"]] = row
+        self._release_trading_off()
 
     def _master_stops(self, row: dict) -> tuple | None:
         master = (self._master_positions or {}).get(row["master_ticket"])
@@ -593,6 +823,16 @@ class Copier:
         if opening and not (self._accounts.get(self.master_id) or {}).get("trading_on"):
             return "MASTER_TRADING_OFF"
         return None
+
+
+def _ms(value: float) -> str:
+    return f"{value:.2f}" if value < 10 else f"{value:.0f}"
+
+
+def _master_ticket(comment: str) -> int | None:
+    """The master ticket in a copy's comment ("copy 123"), or None."""
+    number = comment.removeprefix("copy ").strip()
+    return int(number) if comment.startswith("copy ") and number.isdigit() else None
 
 
 def _order_target(master: dict) -> tuple:

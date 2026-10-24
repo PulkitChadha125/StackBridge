@@ -282,6 +282,11 @@ tr[data-row] { cursor: pointer; }
 .order-detail { display: flex; flex-direction: column; gap: 6px; }
 .order-detail h4 { margin: 12px 0 2px; font-size: 11px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: .06em; }
 .order-detail h4:first-child { margin-top: 0; }
+.latency-spread { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); margin-bottom: 6px; }
+/* The client table of a trade has many columns: tighter cells, and it scrolls sideways rather than leave the pop-up. */
+.order-clients { display: block; overflow-x: auto; }
+.order-clients th, .order-clients td { padding: 8px 10px; }
+.order-clients td.reason { min-width: 160px; }
 .order-grid .value { font-size: 14px; }
 .history { margin: 0; padding-left: 18px; }
 .history li { padding: 1px 0; }

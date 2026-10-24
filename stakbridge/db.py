@@ -165,13 +165,18 @@ class Database:
 
     def save_copy(self, row: dict) -> None:
         """Inserts or updates one copy (one master position on one client)."""
+        self.save_copies([row])
+
+    def save_copies(self, rows: list[dict]) -> None:
+        """Inserts or updates copies in one transaction: one disk write for a whole burst."""
         placeholders = ", ".join("?" for _ in COPY_COLUMNS)
         updates = ", ".join(f"{c} = excluded.{c}" for c in COPY_COLUMNS if c != "created_at")
+        stamp = now_iso()
         with self._connect() as conn:
-            conn.execute(
+            conn.executemany(
                 f"INSERT INTO copies ({', '.join(COPY_COLUMNS)}, updated_at) VALUES ({placeholders}, ?) "
                 f"ON CONFLICT(master_id, master_ticket, client_id) DO UPDATE SET {updates}, updated_at = excluded.updated_at",
-                (*(row.get(c) for c in COPY_COLUMNS), now_iso()),
+                [(*(row.get(c) for c in COPY_COLUMNS), stamp) for row in rows],
             )
 
     def live_copies(self, master_id: str) -> list[dict]:
@@ -181,6 +186,15 @@ class Database:
                 f"SELECT * FROM copies WHERE master_id = ? AND status IN ({marks})", (master_id, *LIVE_COPY_STATUSES)
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def find_copy(self, master_id: str, client_id: str, master_ticket: int | None = None,
+                  client_ticket: int | None = None) -> dict | None:
+        """The copy of this master ticket on this client, or the one with this client ticket (newest first)."""
+        column, value = ("master_ticket", master_ticket) if master_ticket is not None else ("client_ticket", client_ticket)
+        with self._connect() as conn:
+            row = conn.execute(f"SELECT * FROM copies WHERE master_id = ? AND client_id = ? AND {column} = ? "
+                               "ORDER BY created_at DESC LIMIT 1", (master_id, client_id, value)).fetchone()
+        return None if row is None else dict(row)
 
     def list_copies(self, limit: int = 200) -> list[dict]:
         with self._connect() as conn:

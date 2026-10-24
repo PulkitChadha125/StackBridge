@@ -67,7 +67,7 @@
         <form method="post" action="{{ url_for('superadmin_web.reset_admin_password', admin_id=admin.id) }}" onsubmit="return confirm('Reset this Admin password? A new temporary password will be generated and all sessions terminated.');">
             <button type="submit" class="btn-secondary">Reset Password</button>
         </form>
-        <form method="post" action="{{ url_for('superadmin_web.delete_admin', admin_id=admin.id) }}" onsubmit="return confirm('Permanently delete ' + {{ admin.name|tojson }} + '? This removes their login, devices, and sessions, lets their email/PC take a new trial, and erases their client data from their app the next time it checks in. This cannot be undone.');">
+        <form method="post" action="{{ url_for('superadmin_web.delete_admin', admin_id=admin.id) }}" onsubmit="return confirm('Permanently delete ' + {{ admin.name|tojson|forceescape }} + '? This removes their login, devices, and sessions, lets their email/PC take a new trial, and erases their client data from their app the next time it checks in. This cannot be undone.');">
             <button type="submit" class="btn-danger">Delete Admin</button>
         </form>
     </div>

@@ -13,7 +13,8 @@ PROBLEM_MARK = "  !! "
 OK_MARK = "  -> "
 PROBLEM_STATUSES = ("rejected", "unknown", "skipped")
 # Reasons that only explain what happened, not a problem.
-INFO_REASONS = ("ALREADY_CLOSED_ON_CLIENT", "ALREADY_GONE_ON_CLIENT", "FOUND_AFTER_LOST_ANSWER")
+INFO_REASONS = ("ALREADY_CLOSED_ON_CLIENT", "ALREADY_GONE_ON_CLIENT", "FOUND_AFTER_LOST_ANSWER",
+                "RELEASED_TRADING_OFF")
 MAX_ORDERS = 5000
 
 

@@ -29,6 +29,8 @@ class Settings:
     copy_max_age: float = 30.0
     # Copier: seconds between retries of client closes or SL/TP changes that did not go through.
     copy_retry_interval: float = 2.0
+    # Copier: seconds between checks that every client's copies match the master (leftovers are closed).
+    copy_check_interval: float = 1.0
 
     @property
     def db_path(self) -> Path:
@@ -48,6 +50,7 @@ def load_settings(**overrides) -> Settings:
         deviation_points=int(os.environ.get("STAKBRIDGE_DEVIATION_POINTS", "20")),
         copy_poll_ms=float(os.environ.get("STAKBRIDGE_COPY_POLL_MS", "2")),
         copy_max_age=float(os.environ.get("STAKBRIDGE_COPY_MAX_AGE", "30")),
+        copy_check_interval=float(os.environ.get("STAKBRIDGE_COPY_CHECK_SECONDS", "1")),
     )
     values.update(overrides)
     if values["backend"] not in {"mt5", "fake"}:

@@ -4,6 +4,8 @@ Trades on the master are placed straight through its worker, which is how a pers
 trading the master terminal looks to the copier.
 """
 
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -17,7 +19,7 @@ from conftest import Bridge, wait_until
 def make_bridge(tmp_path):
     """Starts StakBridge on a data folder. Can be called again to test a restart."""
     settings = load_settings(data_dir=tmp_path, backend="fake", status_interval=0.2, trade_timeout=5.0,
-                             copy_retry_interval=0.3)
+                             copy_retry_interval=0.3, copy_check_interval=0.5)
     clients = []
 
     def start():
@@ -401,3 +403,125 @@ def test_client_that_cannot_take_the_order_does_not_hold_up_the_others(copier):
     assert b.send("acct_a", "fill_pending", ticket=ticket)["status"] == "filled"
     wait_until(lambda: len(b.positions("acct_b")) == 1)
     assert b.positions("acct_c") == []
+
+
+# ---- periodic check: the client's copies against the master ----
+
+def _edit_row(b, ticket, client_id, **values):
+    """Changes the copier's own record of a copy, as if it had lost track of it."""
+    engine = b.client.app.state.copier
+
+    def edit():
+        row = engine._copies[ticket][client_id]
+        row.update(values)
+        engine.db.save_copy(row)
+        if values.get("status") not in ("pending", "placed", "open", "unknown"):
+            del engine._copies[ticket][client_id]  # a finished copy is no longer looked after
+    engine._executor.submit(edit).result()
+
+
+def test_copy_still_open_after_the_master_closed_is_closed_by_the_check(copier):
+    b = copier
+    ticket = master_open(b)
+    wait_until(lambda: len(copies(b)) == 2 and all(r["status"] == "open" for r in copies(b)))
+    # StakBridge wrongly believes acct_b's copy is closed already, so the normal close skips it.
+    _edit_row(b, ticket, "acct_b", status="closed", reason=None)
+    master_close(b)
+    wait_until(lambda: b.positions("acct_c") == [])
+    wait_until(lambda: b.positions("acct_b") == [])  # closed by the periodic check
+    row = copies(b, "acct_b")[0]
+    assert row["status"] == "closed" and row["reason"].startswith("CLOSED_BY_CHECK")
+    assert any("still open after the master closed it" in e["message"] for e in b.get("/logs?level=warning").json()["logs"])
+
+
+def test_open_reported_as_failed_is_taken_back_and_closed_with_the_master(copier):
+    b = copier
+    ticket = master_open(b)
+    wait_until(lambda: len(copies(b)) == 2 and all(r["status"] == "open" for r in copies(b)))
+    client_ticket = b.positions("acct_b")[0]["ticket"]
+    _edit_row(b, ticket, "acct_b", status="rejected", reason="ORDER_SEND_FAILED: -10005 IPC timeout", client_ticket=None)
+    wait_until(lambda: copies(b, "acct_b")[0]["status"] == "open")
+    row = copies(b, "acct_b")[0]
+    assert row["clientTicket"] == client_ticket and row["reason"].startswith("FOUND_BY_CHECK (was rejected")
+    master_close(b)
+    wait_until(lambda: b.positions("acct_b") == [] and b.positions("acct_c") == [])
+
+
+def test_copies_the_check_cannot_map_to_this_master_are_left_alone(copier):
+    b = copier
+    b.open_by_hand("acct_b", magic=990000)  # a copy-like position with no record (e.g. from an earlier master)
+    master_open(b)
+    master_close(b)
+    wait_until(lambda: any("not from master acct_a" in e["message"] for e in b.get("/logs?level=warning").json()["logs"]))
+    assert len(b.positions("acct_b")) == 1
+
+
+def test_the_check_runs_every_second_by_default(monkeypatch, tmp_path):
+    monkeypatch.delenv("STAKBRIDGE_COPY_CHECK_SECONDS", raising=False)
+    assert load_settings(data_dir=tmp_path, backend="fake").copy_check_interval == 1.0
+
+
+def test_the_check_keeps_its_own_pace_when_retries_are_slow(tmp_path):
+    settings = load_settings(data_dir=tmp_path, backend="fake", status_interval=0.2, trade_timeout=5.0,
+                             copy_retry_interval=30.0, copy_check_interval=0.5)
+    with TestClient(create_app(settings)) as client:
+        b = Bridge(client)
+        b.add_account("acct_a", 5012345)
+        b.add_account("acct_b", 5012346, suffix=".m")
+        b.wait_connected("acct_a", "acct_b")
+        set_copier(b, clients=(("acct_b", 1.0),))
+        wait_until(lambda: b.get("/copier").json()["watching"])
+        ticket = master_open(b)
+        wait_until(lambda: len(copies(b)) == 1 and copies(b)[0]["status"] == "open")
+        _edit_row(b, ticket, "acct_b", status="closed", reason=None)
+        master_close(b)
+        # With retries every 30 s, only the check (every 0.5 s) can close it this soon.
+        wait_until(lambda: b.positions("acct_b") == [], timeout=5.0)
+
+
+def test_trading_off_lets_go_of_the_client_copies_and_on_starts_fresh(copier):
+    b = copier
+    first = master_open(b)
+    wait_until(lambda: len(copies(b)) == 2 and all(r["status"] == "open" for r in copies(b)))
+    b.patch("/accounts/acct_b", {"tradingOn": False})
+    wait_until(lambda: copies(b, "acct_b")[0]["status"] == "released")
+    assert copies(b, "acct_b")[0]["reason"] == "RELEASED_TRADING_OFF"
+    master_close(b)
+    wait_until(lambda: b.positions("acct_c") == [])
+    b.patch("/accounts/acct_b", {"tradingOn": True})
+    time.sleep(1.5)  # three periodic checks: the released copy is not closed or taken back
+    assert len(b.positions("acct_b")) == 1
+    assert [r["status"] for r in copies(b, "acct_b") if r["masterTicket"] == first] == ["released"]
+    second = master_open(b)  # a fresh start: new master trades are copied again
+    wait_until(lambda: any(r["masterTicket"] == second and r["status"] == "open" for r in copies(b, "acct_b")))
+    logs = [e["message"] for e in b.get("/logs").json()["logs"]]
+    assert any("Trading switched OFF on" in m and "1 copies are no longer followed" in m for m in logs)
+
+
+def test_each_master_trade_logs_every_client_latency(copier):
+    b = copier
+    ticket = master_open(b)
+    wait_until(lambda: len(copies(b)) == 2 and all(r["status"] == "open" for r in copies(b)))
+    master_close(b)
+    wait_until(lambda: len(copies(b)) == 2 and all(r["status"] == "closed" for r in copies(b)))
+
+    def line(words):
+        logs = [e["message"] for e in b.get("/logs").json()["logs"]]
+        return next((m for m in logs if m.startswith(f"Master trade #{ticket} {words}")), None)
+    wait_until(lambda: line("copied to") and line("closed on"))
+    for words in ("copied to", "closed on"):
+        text = line(words)
+        assert f"{words} 2 of 2 clients - fastest" in text and " ms" in text, text
+        assert "ACCT_B" in text and "ACCT_C" in text, text  # account names
+
+
+def test_a_client_that_fails_is_named_in_the_latency_line(copier):
+    b = copier
+    b.patch("/accounts/acct_c", {"tradingOn": False})
+    ticket = master_open(b)
+    wait_until(lambda: copies(b, "acct_b") and copies(b, "acct_b")[0]["status"] == "open")
+    wait_until(lambda: any(e["message"].startswith(f"Master trade #{ticket} copied to 1 of 2 clients")
+                           for e in b.get("/logs?level=warning").json()["logs"]))
+    text = next(e["message"] for e in b.get("/logs?level=warning").json()["logs"]
+                if e["message"].startswith(f"Master trade #{ticket}"))
+    assert "not copied (TRADING_OFF)" in text, text

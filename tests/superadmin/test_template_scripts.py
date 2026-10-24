@@ -49,3 +49,29 @@ def test_scripts_parse_with_node(tmp_path, name, index, body):
         ["node", "--check", str(js)], capture_output=True, text=True
     )
     assert result.returncode == 0, f"{name} script {index} failed to parse:\n{result.stderr}"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_inline_handlers_on_the_admin_page_parse(tmp_path, client, sa_app):
+    """onsubmit="..." handlers with the Admin's name in them. A name in double quotes once ended the attribute
+    early: the confirm() never ran and Delete Admin deleted without asking."""
+    import html
+    from datetime import date, timedelta
+
+    from superadmin_panel import db, repositories as repo, security
+
+    from .test_superadmin_web import _login
+
+    with sa_app.app_context():
+        admin = repo.create_admin(db.get_db(), name="Ann \"Quick\" O'Brien & Co", username="ann_admin",
+                                  password_hash=security.hash_password("Temp-Pass-1"), allowed_installations=1,
+                                  expiry_date=(date.today() + timedelta(days=30)).isoformat())
+    _login(client)
+    page = client.get(f"/admins/{admin['id']}").get_data(as_text=True)
+    handlers = re.findall(r'\son\w+="([^"]*)"', page)
+    assert any("Permanently delete" in h for h in handlers), "the delete confirm handler was cut short"
+    for index, handler in enumerate(handlers):
+        js = tmp_path / f"handler{index}.js"
+        js.write_text(f"function handler() {{ {html.unescape(handler)} }}", encoding="utf-8")
+        result = subprocess.run(["node", "--check", str(js)], capture_output=True, text=True)
+        assert result.returncode == 0, f"handler does not parse: {handler!r}\n{result.stderr}"

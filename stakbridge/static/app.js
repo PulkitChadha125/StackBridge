@@ -445,6 +445,7 @@ const orderKey = (o) => `${o.masterId}:${o.ticket}`;
 
 // Plain-language meaning of the reasons a copy can show.
 const REASONS = [
+  ["RELEASED_TRADING_OFF", "this account's Trading was switched OFF, so StakBridge stopped following this copy; close it by hand if needed"],
   ["TRADING_OFF", "the Trading switch of this account was OFF"],
   ["MASTER_TRADING_OFF", "the master account's Trading switch was OFF, so no account copied it"],
   ["COPIER_PAUSED", "the copier was OFF"],
@@ -530,11 +531,36 @@ function copyResult(c) {
   if (c.status === "skipped") return `<span class="result-skip">Not copied</span>`;
   if (c.status === "rejected") return `<span class="result-bad">Failed</span>`;
   if (c.status === "unknown") return `<span class="result-wait">No answer yet</span>`;
+  if (c.status === "released") return `<span class="result-skip">Released (Trading OFF)</span>`;
   const problem = PROBLEM.test(c.reason || "");
   if (c.status === "closed") return `<span class="result-ok">Copied, closed</span>`;
   if (c.status === "cancelled") return `<span class="result-skip">Order deleted</span>`;
   if (c.status === "placed") return `<span class="${problem ? "result-wait" : "result-ok"}">Order placed, waiting${problem ? ", needs attention" : ""}</span>`;
   return `<span class="${problem ? "result-wait" : "result-ok"}">Copied${problem ? ", needs attention" : ""}</span>`;
+}
+
+// Placed or not on this account's broker.
+function copyPlaced(c) {
+  if (c.status === "pending") return `<span class="result-wait">Sending…</span>`;
+  return c.clientTicket != null ? `<span class="result-ok">Yes</span>` : `<span class="result-bad">No</span>`;
+}
+
+// Latency of one account, and how far behind the fastest account it was.
+function latencyCell(value, broker, fastest) {
+  if (value == null) return "";
+  const behind = value - fastest;
+  const compare = behind > 0 ? `+${fmtMs(behind)} ms vs fastest` : "fastest";
+  return `${ms(value, broker)}<div class="sub">${compare}</div>`;
+}
+
+// Fastest, median and slowest latency over all accounts, with who was fastest and slowest.
+function latencySpread(label, copies, key) {
+  const done = copies.filter((c) => c[key] != null).sort((a, b) => a[key] - b[key]);
+  if (!done.length) return "";
+  const who = (c) => esc(state.accounts.find((a) => a.id === c.clientId)?.name ?? c.clientId);
+  const first = done[0], last = done[done.length - 1];
+  return `<div><div class="label">${label}</div><div class="value">${fmtMs(median(done.map((c) => c[key])))} ms median</div>
+    <div class="sub">fastest ${fmtMs(first[key])} ms (${who(first)}) · slowest ${fmtMs(last[key])} ms (${who(last)})</div></div>`;
 }
 
 function renderOrderDetail(o) {
@@ -552,18 +578,24 @@ function renderOrderDetail(o) {
       : `<span class="status-open">${o.status === "waiting" ? "waiting to fill" : "still open"}</span>`)}
   </div>`;
   const history = o.events.map((e) => `<li><span class="sub">${esc(fmtTime(e.at))}</span> ${esc(e.text)}</li>`).join("");
-  const clients = o.copies.map((c) => `<tr>
+  const fastest = (key) => Math.min(...o.copies.map((c) => c[key]).filter((x) => x != null));
+  const fastestOpen = fastest("openMs"), fastestClose = fastest("closeMs");
+  // Fastest first, the accounts without a latency (failed, skipped, sending) at the end.
+  const sorted = [...o.copies].sort((a, b) => (a.openMs ?? Infinity) - (b.openMs ?? Infinity));
+  const clients = sorted.map((c) => `<tr>
       <td>${esc(name(c.clientId))}</td>
+      <td>${copyPlaced(c)}</td>
       <td>${copyResult(c)}</td>
+      <td class="num">${latencyCell(c.openMs, c.brokerOpenMs, fastestOpen)}</td>
+      <td class="num">${latencyCell(c.closeMs, c.brokerCloseMs, fastestClose)}</td>
       <td>${esc(c.symbol)}</td>
       <td class="num">${esc(c.volume ?? "")}</td>
       <td class="num">${esc(c.clientTicket ?? "")}</td>
       <td class="num">${esc(c.openPrice ?? "")}</td>
-      <td class="num">${ms(c.openMs, c.brokerOpenMs)}</td>
       <td class="num">${esc(c.closePrice ?? "")}</td>
-      <td class="num">${ms(c.closeMs, c.brokerCloseMs)}</td>
       <td class="reason">${explainReason(c.reason)}</td>
     </tr>`).join("");
+  const spread = latencySpread("Open latency", o.copies, "openMs") + latencySpread("Close latency", o.copies, "closeMs");
   const logs = (state.orderLogs || []).map((e) => `<tr>
       <td class="num">${esc(fmtTime(e.at))}</td><td class="level-${esc(e.level)}">${esc(e.level)}</td>
       <td>${esc(e.account ?? "")}</td><td class="log-message">${esc(e.message)}</td></tr>`).join("");
@@ -572,8 +604,9 @@ function renderOrderDetail(o) {
     <h2 id="modal-title">${esc(sideName(o))} ${esc(o.volume)} ${esc(o.symbol)}${o.status === "waiting" ? ` @ ${esc(o.price)}` : ""}
       <span class="sub">· ${o.copies.length ? `copied to ${copied} of ${o.copies.length} accounts` : "no client accounts"}</span></h2>
     <h4>Client accounts</h4>
-    ${clients ? `<table><thead><tr><th>Account</th><th>Result</th><th>Symbol</th><th>Lots</th><th>Ticket</th><th>Open price</th><th>Open latency</th><th>Close price</th><th>Close latency</th><th>Error / reason</th></tr></thead><tbody>${clients}</tbody></table>
-      <p class="hint">Latency: time from StakBridge seeing the change on the master until that account's broker confirmed it. "broker": the part spent waiting for the broker's server.</p>`
+    ${spread ? `<div class="check-grid order-grid latency-spread">${spread}</div>` : ""}
+    ${clients ? `<table class="order-clients"><thead><tr><th>Account</th><th>Placed</th><th>Result</th><th>Open latency</th><th>Close latency</th><th>Symbol</th><th>Lots</th><th>Ticket</th><th>Open price</th><th>Close price</th><th>Error / reason</th></tr></thead><tbody>${clients}</tbody></table>
+      <p class="hint">Latency: time from StakBridge seeing the change on the master until that account's broker confirmed it, fastest account first. "broker": the part spent waiting for the broker's server.</p>`
       : `<p class="sub">There were no client accounts when this trade was placed.</p>`}
     <h4>Trade on the master</h4>${details}
     <h4>History</h4><ul class="history">${history}</ul>
@@ -1113,9 +1146,11 @@ view.addEventListener("input", (e) => {
   else if (copier === "sym-from" || copier === "sym-to") {
     editCopier((d) => { draftClient(d, id).symbols[Number(index)][copier === "sym-from" ? "from" : "to"] = e.target.value; });
   } else return;
-  // No redraw while typing (it would lose the cursor); just enable Save.
+  // No redraw while typing (it would lose the cursor); just enable Save and show Discard.
   const save = $("#copier-save");
   if (save) save.disabled = false;
+  const discard = view.querySelector("[data-action=copier-discard]");
+  if (discard) discard.hidden = false;
 });
 
 // ---------- header ----------
