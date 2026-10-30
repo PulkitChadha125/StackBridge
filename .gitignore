@@ -22,3 +22,6 @@ logs/
 caddy/
 session.bin
 license_cache.json
+# RAM bug write-up and its memory test scripts: kept on this PC only
+RAM_BUG_FIX.md
+tools/memtest/

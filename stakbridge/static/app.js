@@ -96,7 +96,8 @@ async function act(fn, okText) {
 let refreshing = false;
 
 async function refresh(force = false) {
-  if (!signedIn || (refreshing && !force)) return;
+  // Nothing to show while the window is minimized: the copier runs on without the page.
+  if (!signedIn || (document.hidden && !force) || (refreshing && !force)) return;
   refreshing = true;
   try {
     const [accounts, health, copier, errors, licence] = await Promise.all([
@@ -207,6 +208,40 @@ for (const type of ["pointerup", "pointercancel"]) {
   }, true);
 }
 
+// Put new HTML into an element by changing only what differs, like innerHTML but keeping the elements.
+// The view is redrawn every second: replacing it all each time made the WebView2 window grow by about
+// 1.5 GB a day (the browser does not hand back all the memory of thrown-away elements).
+function patchHtml(el, html) {
+  const next = document.createElement("template");
+  next.innerHTML = html;
+  patchChildren(el, next.content);
+}
+
+function patchChildren(have, want) {
+  const nodes = [...want.childNodes];
+  nodes.forEach((node, i) => {
+    const old = have.childNodes[i];
+    if (!old) have.appendChild(node);
+    else if (old.nodeName !== node.nodeName) have.replaceChild(node, old);
+    else if (node.nodeType !== Node.ELEMENT_NODE) { if (old.nodeValue !== node.nodeValue) old.nodeValue = node.nodeValue; }
+    else patchElement(old, node);
+  });
+  while (have.childNodes.length > nodes.length) have.lastChild.remove();
+}
+
+function patchElement(old, node) {
+  for (const { name } of [...old.attributes]) if (!node.hasAttribute(name)) old.removeAttribute(name);
+  for (const { name, value } of node.attributes) if (old.getAttribute(name) !== value) old.setAttribute(name, value);
+  patchChildren(old, node);
+  // Boxes end up as a new element would (what the user typed is put back by render() as before).
+  if (old.tagName === "INPUT") {
+    if (old.value !== node.value) old.value = node.value;
+    old.checked = node.checked;
+  }
+  if (old.tagName === "TEXTAREA" && old.value !== node.value) old.value = node.value;
+  if (old.tagName === "SELECT") old.selectedIndex = node.selectedIndex;
+}
+
 function render(keepTyped = false) {
   if (pressing && performance.now() - pressing < PRESS_MAX_MS) { redrawOnRelease = true; return; }
   renderLicence();
@@ -223,10 +258,10 @@ function render(keepTyped = false) {
   $("#add-account").hidden = state.tab !== "accounts";
   if (!state.editingAccount) updateRoleField();
 
-  if (state.tab === "accounts") view.innerHTML = renderAccounts();
-  if (state.tab === "trades") view.innerHTML = renderTrades();
-  if (state.tab === "copier") view.innerHTML = renderCopier();
-  if (state.tab === "log") { view.innerHTML = renderLog(); markErrorsSeen(); }
+  if (state.tab === "accounts") patchHtml(view, renderAccounts());
+  if (state.tab === "trades") patchHtml(view, renderTrades());
+  if (state.tab === "copier") patchHtml(view, renderCopier());
+  if (state.tab === "log") { patchHtml(view, renderLog()); markErrorsSeen(); }
   updateLogBadge();
   renderModal();
 
@@ -663,7 +698,7 @@ function renderModal() {
   if (!order) { modal.hidden = true; return; }
   const body = $("#modal-body");
   const scroll = modal.scrollTop;
-  body.innerHTML = renderOrderDetail(order);
+  patchHtml(body, renderOrderDetail(order));
   modal.hidden = false;
   modal.scrollTop = scroll;
 }
@@ -1509,3 +1544,4 @@ async function start() {
 
 start();
 setInterval(() => refresh(), REFRESH_MS);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
