@@ -49,6 +49,9 @@ class CopierIn(ApiModel):
     master_id: str | None = Field(None, min_length=1, max_length=40)
     # Lot multiplier and symbol names per client. A client not listed here copies at x1.
     clients: list[CopierClient] = []
+    # "Master check speed": milliseconds between checks of the master's positions. Lower copies a little
+    # sooner and uses more CPU. Left out: the saved value is kept.
+    poll_ms: int | None = Field(None, ge=1, le=100)
 
 
 class LoginIn(ApiModel):

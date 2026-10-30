@@ -83,6 +83,11 @@ def client_count(accounts: list) -> int:
     return max(0, len(accounts) - 1)
 
 
+def poll_ms(config: dict, settings: Settings) -> float:
+    """The master check speed: the one saved in the Copier tab, otherwise the default (4 ms)."""
+    return config.get("pollMs") or settings.copy_poll_ms
+
+
 class Core:
     """One StakBridge on one data folder: database, broker workers and copier. Without a licence there
     is one, on the data folder. With a licence each Admin has their own, started when they sign in."""
@@ -94,6 +99,7 @@ class Core:
         self.applog = AppLog(self.db)
         self.cipher = PasswordCipher(settings.key_path)
         self.workers = WorkerManager(settings)
+        self.workers.poll_ms = poll_ms(self.db.get_copier(), settings)
         self.copier = Copier(self.db, self.workers, settings, license_ok=license_ok)
 
     def sync_worker(self, account: dict) -> None:
@@ -734,7 +740,9 @@ def create_app(settings: Settings | None = None, licence: LicenceOptions | None 
 
     def copier_out() -> dict:
         copies = [{to_camel(k): v for k, v in row.items()} for row in db.list_copies()]
-        return {**db.get_copier(), **copier.status(), "copies": copies}
+        config = db.get_copier()
+        return {**config, "pollMs": poll_ms(config, settings), "pollMsDefault": settings.copy_poll_ms,
+                **copier.status(), "copies": copies}
 
     @v1.get("/copier")
     def get_copier():
@@ -753,11 +761,17 @@ def create_app(settings: Settings | None = None, licence: LicenceOptions | None 
             raise ApiError(400, "DUPLICATE_CLIENT", "each client account can be listed only once")
 
         old_master = copier.master_id
+        saved = db.get_copier()
         config = {"masterId": body.master_id,
                   "clients": [{"accountId": c.account_id, "multiplier": c.multiplier, "symbols": c.symbols}
                               for c in body.clients]}
+        if body.poll_ms or saved.get("pollMs"):
+            config["pollMs"] = body.poll_ms or saved["pollMs"]
         db.set_copier(config)
         copier.configure(config)
+        if poll_ms(config, settings) != poll_ms(saved, settings):
+            workers.set_poll_ms(poll_ms(config, settings))
+            log.warning("master check speed set to %s ms", poll_ms(config, settings))
         if old_master != body.master_id:
             if old_master:
                 workers.set_watch(old_master, False)

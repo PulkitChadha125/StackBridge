@@ -194,7 +194,21 @@ $("#licence-bar-check").addEventListener("click", () => act(async () => {
 
 // ---------- rendering ----------
 
+// No redraw while a mouse button is held down: a button replaced between press and release gets no click.
+// The redraw happens right after the release instead (the click event follows pointerup).
+const PRESS_MAX_MS = 5000;  // a release outside the window may never arrive: redraw anyway after this
+let pressing = 0;  // when the mouse button went down, 0 when it is up
+let redrawOnRelease = false;
+document.addEventListener("pointerdown", () => { pressing = performance.now(); }, true);
+for (const type of ["pointerup", "pointercancel"]) {
+  document.addEventListener(type, () => {
+    pressing = 0;
+    if (redrawOnRelease) { redrawOnRelease = false; setTimeout(() => render(true), 0); }
+  }, true);
+}
+
 function render(keepTyped = false) {
+  if (pressing && performance.now() - pressing < PRESS_MAX_MS) { redrawOnRelease = true; return; }
   renderLicence();
   // Keep what the user typed (but did not submit) across the automatic refresh.
   const typed = {};
@@ -598,7 +612,7 @@ function renderOrderDetail(o) {
   const spread = latencySpread("Open latency", o.copies, "openMs") + latencySpread("Close latency", o.copies, "closeMs");
   const logs = (state.orderLogs || []).map((e) => `<tr>
       <td class="num">${esc(fmtTime(e.at))}</td><td class="level-${esc(e.level)}">${esc(e.level)}</td>
-      <td>${esc(e.account ?? "")}</td><td class="log-message">${esc(e.message)}</td></tr>`).join("");
+      <td>${esc(e.account ? accountLabel(e.account) : "")}</td><td class="log-message">${esc(e.message)}</td></tr>`).join("");
   const copied = o.copies.filter((c) => c.clientTicket != null && c.status !== "rejected").length;
   return `<div class="order-detail">
     <h2 id="modal-title">${esc(sideName(o))} ${esc(o.volume)} ${esc(o.symbol)}${o.status === "waiting" ? ` @ ${esc(o.price)}` : ""}
@@ -637,9 +651,9 @@ function renderTrades() {
       <td class="num">${opens.length ? `${fmtMs(Math.max(...opens))} ms` : ""}</td>
     </tr>`;
   }).join("");
-  return `${intro}<table>
+  return `${intro}<div class="table-scroll"><table>
     <thead><tr><th>Time</th><th>Ticket</th><th>Symbol</th><th>Side</th><th>Lots</th><th>Price</th><th>SL / TP</th><th>Master</th><th>Clients</th><th>Slowest copy</th></tr></thead>
-    <tbody>${rows}</tbody></table>`;
+    <tbody>${rows}</tbody></table></div>`;
 }
 
 // The pop-up of the clicked trade. Redrawn on every refresh, so results and latencies fill in live.
@@ -674,6 +688,7 @@ function savedCopierForm() {
   const c = state.copier || { masterId: null, clients: [] };
   return {
     masterId: c.masterId,
+    pollMs: String(c.pollMs ?? ""),
     clients: Object.fromEntries(c.clients.map((x) => [x.accountId, {
       mult: String(x.multiplier),
       symbols: Object.entries(x.symbols || {}).map(([from, to]) => ({ from, to })),
@@ -767,6 +782,10 @@ function renderCopier() {
     <h3>Master account</h3>
     <select data-copier="master" aria-label="Master account">${options}</select>
     <p class="hint">Every position opened, changed or closed on the master is copied to every other account whose Trading switch is ON. Trades you place yourself on a client are never touched.</p>
+    <h3>Master check speed</h3>
+    <label class="poll-ms">Check the master every <input type="number" min="1" max="100" step="1" data-copier="poll" value="${esc(form.pollMs)}" aria-label="Master check speed in milliseconds"> ms</label>
+    <p class="hint">How often StakBridge looks for new, changed or closed trades on the master (1 to 100 ms, default ${esc(c.pollMsDefault ?? 4)}).
+      Lower copies a little sooner but uses more CPU; 4 ms adds about 2 ms to a copy, the broker itself takes 30 to 300 ms.</p>
     <h3>Client accounts</h3>
     <table><thead><tr><th>Account</th><th>Status</th><th>Trading</th><th>Lot multiplier</th><th>Symbols</th></tr></thead>
       <tbody>${clients || `<tr><td colspan="5" class="sub">No other accounts.</td></tr>`}</tbody></table>
@@ -790,7 +809,7 @@ function renderCopier() {
   const rows = copies.slice(0, 100).map((x) => `<tr>
       <td class="num">${esc(fmtTime(x.createdAt))}</td>
       <td class="num">${esc(x.masterTicket)}</td>
-      <td>${esc(x.clientId)}</td>
+      <td>${esc(accountLabel(x.clientId))}</td>
       <td>${esc(x.symbol)}</td>
       <td>${esc(x.side)}</td>
       <td class="num">${esc(x.masterVolume)} → ${esc(x.volume ?? "")}</td>
@@ -801,7 +820,7 @@ function renderCopier() {
       <td>${esc(x.reason ?? "")}</td>
     </tr>`).join("");
   const table = copies.length
-    ? `<table><thead><tr><th>Time</th><th>Master ticket</th><th>Client</th><th>Symbol</th><th>Side</th><th>Lots</th><th>Status</th><th>Client ticket</th><th>Open</th><th>Close</th><th>Reason</th></tr></thead><tbody>${rows}</tbody></table>
+    ? `<div class="table-scroll"><table><thead><tr><th>Time</th><th>Master ticket</th><th>Client</th><th>Symbol</th><th>Side</th><th>Lots</th><th>Status</th><th>Client ticket</th><th>Open</th><th>Close</th><th>Reason</th></tr></thead><tbody>${rows}</tbody></table></div>
        <p class="hint">Open and Close: time from the master change being seen to the client's broker confirming. Broker: the part spent waiting for the broker.</p>`
     : `<div class="empty">No copies yet. Open a trade on the master account and it appears here.</div>`;
 
@@ -824,7 +843,9 @@ function saveCopier(form) {
     }
     clients.push({ accountId, multiplier, symbols });
   }
-  return api("PUT", "/copier", { masterId: form.masterId || null, clients });
+  const pollMs = Number(form.pollMs);
+  if (!(Number.isInteger(pollMs) && pollMs >= 1 && pollMs <= 100)) throw new Error("Master check speed must be a whole number of milliseconds from 1 to 100.");
+  return api("PUT", "/copier", { masterId: form.masterId || null, clients, pollMs });
 }
 
 // ---------- log ----------
@@ -854,12 +875,12 @@ function renderLog() {
   const rows = state.logs.map((e) => `<tr>
       <td class="num">${esc(fmtTime(e.at))}</td>
       <td class="level-${esc(e.level)}">${esc(e.level)}</td>
-      <td>${esc(e.account ?? "")}</td>
+      <td>${esc(e.account ? accountLabel(e.account) : "")}</td>
       <td>${esc(e.source)}</td>
       <td class="log-message">${esc(e.message)}</td>
     </tr>`).join("");
   const table = rows
-    ? `<table><thead><tr><th>Time</th><th>Level</th><th>Account</th><th>Part</th><th>Message</th></tr></thead><tbody>${rows}</tbody></table>`
+    ? `<div class="table-scroll"><table><thead><tr><th>Time</th><th>Level</th><th>Account</th><th>Part</th><th>Message</th></tr></thead><tbody>${rows}</tbody></table></div>`
     : `<div class="empty">Nothing logged${state.logLevel === "info" ? "" : " at this level"} yet.</div>`;
   return `<div class="log">
     <div class="actions">
@@ -883,7 +904,7 @@ function updateRoleField() {
   const masterOption = select.querySelector('option[value="master"]');
   masterOption.disabled = hasMaster;
   masterOption.textContent = hasMaster
-    ? `Master account: already set (${state.copier.masterId})`
+    ? `Master account: already set (${accountLabel(state.copier.masterId)})`
     : "Master account: you trade here, its trades are copied";
   if (!select.dataset.touched) select.value = hasMaster ? "client" : "master";
   if (hasMaster && select.value === "master") select.value = "client";
@@ -1143,6 +1164,7 @@ view.addEventListener("change", (e) => {
 view.addEventListener("input", (e) => {
   const { copier, id, index } = e.target.dataset;
   if (copier === "mult") editCopier((d) => { draftClient(d, id).mult = e.target.value; });
+  else if (copier === "poll") editCopier((d) => { d.pollMs = e.target.value; });
   else if (copier === "sym-from" || copier === "sym-to") {
     editCopier((d) => { draftClient(d, id).symbols[Number(index)][copier === "sym-from" ? "from" : "to"] = e.target.value; });
   } else return;

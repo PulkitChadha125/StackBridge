@@ -23,8 +23,9 @@ class Settings:
     status_interval: float = 1.0
     # Max price slippage in points for market orders.
     deviation_points: int = 20
-    # Copier: milliseconds between position checks on the master account.
-    copy_poll_ms: float = 2.0
+    # Copier: milliseconds between position checks on the master account. The Copier tab can change it
+    # ("Master check speed"); this is the value used until it does.
+    copy_poll_ms: float = 4.0
     # Copier: a master position found after a restart is copied only if it is at most this many seconds old.
     copy_max_age: float = 30.0
     # Copier: seconds between retries of client closes or SL/TP changes that did not go through.
@@ -48,7 +49,7 @@ def load_settings(**overrides) -> Settings:
         trade_timeout=float(os.environ.get("STAKBRIDGE_TRADE_TIMEOUT", "10")),
         status_interval=float(os.environ.get("STAKBRIDGE_STATUS_INTERVAL", "1")),
         deviation_points=int(os.environ.get("STAKBRIDGE_DEVIATION_POINTS", "20")),
-        copy_poll_ms=float(os.environ.get("STAKBRIDGE_COPY_POLL_MS", "2")),
+        copy_poll_ms=float(os.environ.get("STAKBRIDGE_COPY_POLL_MS", "4")),
         copy_max_age=float(os.environ.get("STAKBRIDGE_COPY_MAX_AGE", "30")),
         copy_check_interval=float(os.environ.get("STAKBRIDGE_COPY_CHECK_SECONDS", "1")),
     )

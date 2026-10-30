@@ -9,7 +9,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from stakbridge.api import create_app
+from stakbridge.api import Core, create_app
 from stakbridge.config import load_settings
 
 from conftest import Bridge, wait_until
@@ -193,6 +193,38 @@ def test_master_cannot_be_a_client(copier):
     res = copier.put("/copier", {"masterId": "acct_a",
                                  "clients": [{"accountId": "acct_a", "multiplier": 1}]})
     assert res.status_code == 400 and res.json()["error"]["code"] == "MASTER_IS_CLIENT"
+
+
+def test_master_check_speed_defaults_to_4_ms_and_changes_without_a_new_login(make_bridge):
+    b = make_bridge()
+    b.add_account("acct_a", 5012345)
+    b.add_account("acct_b", 5012346)
+    b.wait_connected("acct_a", "acct_b")
+    assert set_copier(b, clients=(("acct_b", 1.0),))["pollMs"] == 4
+    wait_until(lambda: b.get("/copier").json()["watching"])
+    workers = b.client.app.state.workers
+    master = workers.get("acct_a")
+    assert workers._configs["acct_a"]["watch_ms"] == 4 and workers._configs["acct_b"]["watch_ms"] is None
+
+    res = b.put("/copier", {"masterId": "acct_a", "clients": [{"accountId": "acct_b", "multiplier": 1}], "pollMs": 10})
+    assert res.status_code == 200 and res.json()["pollMs"] == 10
+    assert workers._configs["acct_a"]["watch_ms"] == 10 and workers._configs["acct_b"]["watch_ms"] is None
+    assert workers.get("acct_a") is master  # same worker: MetaTrader was not logged in again
+    master_open(b)
+    wait_until(lambda: len(b.positions("acct_b")) == 1)
+
+    # A save that leaves the speed out (an older page) keeps it.
+    assert set_copier(b, clients=(("acct_b", 1.0),))["pollMs"] == 10
+    for bad in (0, 101, 2.5):
+        res = b.put("/copier", {"masterId": "acct_a", "clients": [], "pollMs": bad})
+        assert res.status_code == 400, bad
+
+    # After a restart the saved speed is used from the start.
+    restarted = Core(b.client.app.state.settings)
+    try:
+        assert restarted.workers.poll_ms == 10
+    finally:
+        restarted.copier.stop()
 
 
 def test_removing_an_account_drops_it_from_the_copier(copier):

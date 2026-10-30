@@ -134,6 +134,8 @@ class WorkerManager:
         self._lock = threading.Lock()
         self._running = False
         self._supervisor: threading.Thread | None = None
+        # Milliseconds between position checks on the watched (master) account. See set_poll_ms.
+        self.poll_ms = settings.copy_poll_ms
         # Set by the copier: receives position events from a watched (master) account.
         self.on_event = None
 
@@ -151,7 +153,7 @@ class WorkerManager:
             "backend": self.settings.backend,
             "status_interval": self.settings.status_interval,
             "deviation_points": self.settings.deviation_points,
-            "watch_ms": self.settings.copy_poll_ms if watch else None,
+            "watch_ms": self.poll_ms if watch else None,
         }
 
     def start(self) -> None:
@@ -178,7 +180,7 @@ class WorkerManager:
 
     def set_watch(self, account_id: str, watch: bool) -> None:
         """Starts or stops position reports from a running worker without logging it in again."""
-        watch_ms = self.settings.copy_poll_ms if watch else None
+        watch_ms = self.poll_ms if watch else None
         with self._lock:
             config = self._configs.get(account_id)
             if config is None or config["watch_ms"] == watch_ms:
@@ -187,6 +189,21 @@ class WorkerManager:
             handle = self._workers.get(account_id)
         if handle is not None:
             handle.send("watch", watch_ms=watch_ms)
+
+    def set_poll_ms(self, poll_ms: float) -> None:
+        """Changes how often the watched (master) account is checked, without logging it in again."""
+        with self._lock:
+            self.poll_ms = poll_ms
+            watched = [account_id for account_id, config in self._configs.items() if config["watch_ms"]]
+        for account_id in watched:
+            with self._lock:
+                config = self._configs.get(account_id)
+                if config is None or not config["watch_ms"] or config["watch_ms"] == poll_ms:
+                    continue
+                config["watch_ms"] = poll_ms
+                handle = self._workers.get(account_id)
+            if handle is not None:
+                handle.send("watch", watch_ms=poll_ms)
 
     def remove(self, account_id: str) -> None:
         with self._lock:

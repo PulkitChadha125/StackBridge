@@ -1,6 +1,8 @@
 """The desktop app (the EXE): StakBridge's web server plus its own window, no browser needed.
 
 Closing the window stops copying, the broker workers and the server, then the program ends.
+When the window cannot open (no .NET Framework 4.7.2+ or WebView2 Runtime), the page opens in the web
+browser instead and a message box stands in for the window: OK on it stops StakBridge.
 The window opens already signed in when this PC has a saved licence sign-in (one-time link).
 Only one copy can run at a time: a second one shows a message and closes.
 
@@ -40,6 +42,55 @@ def _port_in_use(port: int) -> bool:
         return False
 
 
+NETFX_472 = 461808  # .NET Framework 4.7.2 "Release" number; pythonnet (the window's .NET part) needs at least this
+NETFX_URL = "https://dotnet.microsoft.com/download/dotnet-framework/net48"
+WEBVIEW2_URL = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"  # Microsoft's WebView2 Runtime installer
+
+
+def _netfx_release() -> int:
+    """The installed .NET Framework 4.x "Release" number, 0 when there is none."""
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full") as key:
+            return int(winreg.QueryValueEx(key, "Release")[0])
+    except (OSError, ValueError):
+        return 0
+
+
+def _window_problem() -> tuple[str, str] | None:
+    """Why StakBridge's own window cannot open on this PC (what is missing, its download page), or None.
+
+    The window needs the .NET Framework 4.7.2+ and the Microsoft Edge WebView2 Runtime. Some Windows Server
+    and VPS images lack one of them, or have a broken .NET: loading it then fails with a RuntimeError
+    ("Failed to create a .NET runtime"), which pywebview does not catch."""
+    if sys.platform != "win32":
+        return None
+    if _netfx_release() < NETFX_472:
+        return "Microsoft .NET Framework 4.8", NETFX_URL
+    try:
+        from webview.platforms.winforms import _is_chromium  # loads .NET (pythonnet)
+    except Exception:
+        log.exception("the window's .NET part could not load")
+        return "a working Microsoft .NET Framework 4.8 (repair or reinstall it)", NETFX_URL
+    if not _is_chromium():  # pywebview would fall back to Internet Explorer, which shows only the header
+        return "the Microsoft Edge WebView2 Runtime", WEBVIEW2_URL
+    return None
+
+
+def _run_in_browser(url: str, missing: str, download: str) -> None:
+    """Shows StakBridge in the PC's web browser instead of its own window; OK on the message stops it."""
+    import webbrowser
+
+    log.error("own window cannot open (needs %s): using the web browser", missing)
+    webbrowser.open(download)
+    webbrowser.open(url)
+    _message_box(f"StakBridge's own window cannot open on this computer: it needs {missing}.\n\n"
+                 "StakBridge is running and opened in your web browser instead. Your browser also shows the "
+                 "download page: install it and open StakBridge again to get its own window back.\n\n"
+                 "Keep this message open while you use StakBridge. Clicking OK stops StakBridge and copying.")
+
+
 def run() -> None:
     host = os.environ.get("STAKBRIDGE_HOST", "127.0.0.1")
     port = int(os.environ.get("STAKBRIDGE_PORT", "8000"))
@@ -75,18 +126,25 @@ def run() -> None:
         _message_box("StakBridge could not start. The details are in the log folder:\n" + str(device / "logs"))
         os._exit(1)
 
-    import webview
+    def launch_url() -> str:
+        return f"http://127.0.0.1:{port}{app.state.make_launch_link()}"
 
-    webview.settings["ALLOW_DOWNLOADS"] = True
-    window = webview.create_window(APP_NAME, f"http://127.0.0.1:{port}{app.state.make_launch_link()}",
-                                   width=1440, height=900, min_size=(900, 560), text_select=True)
+    problem = _window_problem()
+    if problem is None:
+        try:
+            import webview
 
-    def closed() -> None:
-        log.info("window closed: stopping")
-        server.should_exit = True  # the server's shutdown stops the copier, workers and licence checks
-
-    window.events.closed += closed
-    webview.start()
+            webview.settings["ALLOW_DOWNLOADS"] = True
+            webview.create_window(APP_NAME, launch_url(),
+                                  width=1440, height=900, min_size=(900, 560), text_select=True)
+            webview.start()  # returns when the window is closed
+        except Exception:
+            log.exception("the window failed")
+            problem = "a working Microsoft .NET Framework 4.8 (repair or reinstall it)", NETFX_URL
+    if problem is not None:
+        _run_in_browser(launch_url(), *problem)
+    log.info("stopping")
+    server.should_exit = True  # the server's shutdown stops the copier, workers and licence checks
     thread.join(timeout=30)
     logging.shutdown()
     os._exit(0)  # a stuck broker call must not keep a windowless StakBridge running

@@ -3,15 +3,16 @@
   --bg: #fafafa;
   --surface: #ffffff;
   --text: #18181b;
-  --muted: #71717a;
+  --muted: #686871;
   --faint: #a1a1aa;
   --line: #ececee;
   --line-strong: #dedee2;
   --accent: #2f6fed;
   --on-accent: #ffffff;
-  --ok: #16a34a;
+  --ok: #15803d;
   --bad: #dc2626;
-  --warn: #d97706;
+  --bad-fill: #dc2626;  /* red behind white text (Stop all, the Log dot): the same in both themes */
+  --warn: #b45309;
   --hover: #f4f4f5;
   --selected: #eef3fe;
   --sunken: #f7f7f8;
@@ -81,7 +82,7 @@
 [hidden] { display: none !important; }  /* "hidden" must win over any display rule below */
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased; }
-code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12.5px; padding: 1px 5px; border-radius: 5px; background: var(--hover); }
+code { color: var(--text); font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12.5px; padding: 1px 5px; border-radius: 5px; background: var(--hover); }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; text-underline-offset: 2px; }
 ::selection { background: var(--selected); }
@@ -115,8 +116,8 @@ button { color: inherit; font: inherit; font-size: 13.5px; border-radius: var(--
 button:hover { background: var(--hover); }
 button.primary { background: var(--text); border-color: var(--text); color: var(--bg); font-weight: 500; }
 button.primary:hover { background: color-mix(in srgb, var(--text) 86%, var(--bg)); }
-button.danger { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 600; }
-button.danger:hover { background: color-mix(in srgb, var(--bad) 88%, #000); }
+button.danger { background: var(--bad-fill); border-color: var(--bad-fill); color: #fff; font-weight: 600; }
+button.danger:hover { background: color-mix(in srgb, var(--bad-fill) 88%, #000); }
 button.link { border: none; background: none; color: var(--muted); padding: 4px 2px; }
 button.link:hover { color: var(--text); background: none; }
 button.small { padding: 3px 9px; font-size: 12.5px; }
@@ -136,8 +137,10 @@ input::placeholder { color: var(--faint); }
 /* ---------- Tables ---------- */
 table { width: 100%; border-collapse: separate; border-spacing: 0; background: var(--surface); border: 1px solid var(--line);
   border-radius: var(--radius); overflow: hidden; }
+/* Wide tables (Trades, Recent copies, Log) scroll sideways inside their box, never the whole page. */
+.table-scroll { overflow-x: auto; border-radius: var(--radius); }
 th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
-th { font-weight: 500; color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; padding-top: 9px; padding-bottom: 9px; }
+th { font-weight: 500; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; padding-top: 9px; padding-bottom: 9px; }
 th .sub { font-size: inherit; color: inherit; }
 tr:last-child td { border-bottom: none; }
 tr.clickable { cursor: pointer; }
@@ -201,6 +204,8 @@ td.row-actions button.small[data-action="remove"]:hover { color: var(--bad); bac
 .copier .card h2 { justify-content: space-between; }
 .copier select { width: auto; min-width: 260px; }
 .copier td input[type=number] { width: 90px; }
+.copier .poll-ms { display: inline-flex; align-items: center; gap: 8px; }
+.copier .poll-ms input { width: 90px; }
 .copier td input[type=checkbox] { width: auto; accent-color: var(--accent); }
 .copier tr.off td { color: var(--muted); }
 .copier .actions { margin-top: 14px; }
@@ -212,18 +217,18 @@ td.row-actions button.small[data-action="remove"]:hover { color: var(--bad); bac
 .level-info { color: var(--muted); }
 .level-warning { color: var(--warn); font-weight: 500; }
 .level-error, .level-critical { color: var(--bad); font-weight: 500; }
-nav .count { display: inline-block; min-width: 16px; padding: 0 4px; margin-left: 4px; border-radius: 999px; background: var(--bad); color: #fff; font-size: 10.5px; font-weight: 700; line-height: 16px; text-align: center; vertical-align: 1px; }
+nav .count { display: inline-block; min-width: 16px; padding: 0 4px; margin-left: 4px; border-radius: 999px; background: var(--bad-fill); color: #fff; font-size: 10.5px; font-weight: 700; line-height: 16px; text-align: center; vertical-align: 1px; }
 
 .symbol-map { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
 .symbol-map .hint { margin: 0; }
 .symbol-map table { width: auto; }
 .symbol-map td, .symbol-map th { padding: 6px 8px; }
 .symbol-map input { width: 160px; }
-.symbol-map .arrow { color: var(--faint); }
+.symbol-map .arrow { color: var(--muted); }
 .badge { display: inline-block; font-size: 10.5px; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: var(--hover); color: var(--muted); margin-left: 6px; vertical-align: 1px; letter-spacing: .02em; }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
 .stat { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 18px; }
-.stat .label { color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; font-weight: 500; }
+.stat .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; font-weight: 500; }
 .stat .value { font-size: 22px; font-weight: 600; letter-spacing: -.01em; font-variant-numeric: tabular-nums; margin-top: 4px; }
 .stat .value small { font-size: 13px; color: var(--muted); font-weight: 400; }
 td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -272,7 +277,7 @@ h3.section { font-size: 11.5px; font-weight: 600; color: var(--muted); text-tran
 .close-x:hover { color: var(--text); }
 tr[data-row] { cursor: pointer; }
 .check-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px 18px; }
-.check-grid .label { color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; font-weight: 500; }
+.check-grid .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; font-weight: 500; }
 .check-grid .value { font-size: 15px; font-weight: 500; font-variant-numeric: tabular-nums; margin-top: 1px; }
 
 .pl-up { color: var(--ok); font-weight: 500; }
