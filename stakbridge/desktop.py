@@ -91,6 +91,69 @@ def _run_in_browser(url: str, missing: str, download: str) -> None:
                  "Keep this message open while you use StakBridge. Clicking OK stops StakBridge and copying.")
 
 
+_UNWATCHED = ("AddWebResourceRequestedFilter", "WebResourceRequested", "WebResourceResponseReceived")
+
+
+class _Ignored:
+    """Stands in for a WebView2 call or event pywebview should not use: calls and `+= handler` do nothing."""
+
+    def __call__(self, *args, **kwargs):
+        return None
+
+    def __iadd__(self, handler):
+        return self
+
+
+class _WithoutRequestEvents:
+    """pywebview's WebView2 control (sender.CoreWebView2) without the request/response events; all else passes."""
+
+    def __init__(self, core):
+        object.__setattr__(self, "_core", core)
+
+    def __getattr__(self, name):
+        return _Ignored() if name in _UNWATCHED else getattr(self._core, name)
+
+    def __setattr__(self, name, value):
+        if name not in _UNWATCHED:
+            setattr(self._core, name, value)
+
+
+class _SenderWithoutRequestEvents:
+    def __init__(self, sender):
+        self._sender = sender
+        self.CoreWebView2 = _WithoutRequestEvents(sender.CoreWebView2)
+
+    def __getattr__(self, name):
+        return getattr(self._sender, name)
+
+
+def _stop_request_events() -> None:
+    """Keeps pywebview from watching every request and response of the page (its request_sent and
+    response_received events, which StakBridge does not use). With them WebView2 hands each answer of the
+    1-second refresh to the host and the "WebView2: StakBridge" process grows by ~1 GB a day although the page
+    itself is flat (measured 2026-10-31, see RAM_BUG_FIX.md). Without them it stays at ~40 MB."""
+    try:
+        from webview.platforms.edgechromium import EdgeChrome
+    except Exception:
+        return  # not the WebView2 window: nothing to change
+    if getattr(EdgeChrome.on_webview_ready, "_stakbridge", False):
+        return
+    original = EdgeChrome.on_webview_ready
+
+    def on_webview_ready(self, sender, args):
+        if not args.IsSuccess:
+            return original(self, sender, args)
+        try:
+            wrapped = _SenderWithoutRequestEvents(sender)
+        except Exception:
+            log.exception("could not switch off the window's request events")
+            return original(self, sender, args)
+        return original(self, wrapped, args)
+
+    on_webview_ready._stakbridge = True
+    EdgeChrome.on_webview_ready = on_webview_ready
+
+
 def run() -> None:
     host = os.environ.get("STAKBRIDGE_HOST", "127.0.0.1")
     port = int(os.environ.get("STAKBRIDGE_PORT", "8000"))
@@ -135,6 +198,7 @@ def run() -> None:
             import webview
 
             webview.settings["ALLOW_DOWNLOADS"] = True
+            _stop_request_events()
             webview.create_window(APP_NAME, launch_url(),
                                   width=1440, height=900, min_size=(900, 560), text_select=True)
             webview.start()  # returns when the window is closed
