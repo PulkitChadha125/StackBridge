@@ -251,6 +251,10 @@ function render(keepTyped = false) {
 
   $("#kill-banner").hidden = !state.killSwitch;
   $("#stop-bar").hidden = !state.killSwitch;
+  // The disk is full or failing: copying goes on, saving waits (store.py) and catches up once it works again.
+  const saveProblem = state.copier?.saveProblem || "";
+  $("#save-bar").hidden = !saveProblem;
+  if ($("#save-bar-text").textContent !== saveProblem) $("#save-bar-text").textContent = saveProblem;
   const killBtn = $("#kill-btn");
   killBtn.textContent = state.killSwitch ? "Resume trading" : "Stop all";
   killBtn.className = state.killSwitch ? "primary" : "danger";
@@ -1356,7 +1360,7 @@ function showScreen(screen) {
   $("#logout-btn").hidden = !inApp && screen !== "password-change";
   $("#password-btn").hidden = !inApp || !licensed;
   if (!inApp) {
-    $("#kill-banner").hidden = true; $("#stop-bar").hidden = true;
+    $("#kill-banner").hidden = true; $("#stop-bar").hidden = true; $("#save-bar").hidden = true;
     $("#licence-badge").hidden = true; $("#licence-bar").hidden = true; $("#limit-modal").hidden = true;
   }
 }

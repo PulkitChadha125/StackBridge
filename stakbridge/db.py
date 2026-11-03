@@ -116,6 +116,9 @@ class Database:
         conn = sqlite3.connect(self.path, timeout=10)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
+        # WAL + NORMAL: a commit no longer waits for the disk to confirm every write. Still safe if StakBridge
+        # crashes; only a power cut can lose the last moment of changes (the copier finds those copies again).
+        conn.execute("PRAGMA synchronous=NORMAL")
         try:
             with conn:
                 yield conn
@@ -167,16 +170,17 @@ class Database:
         """Inserts or updates one copy (one master position on one client)."""
         self.save_copies([row])
 
-    def save_copies(self, rows: list[dict]) -> None:
-        """Inserts or updates copies in one transaction: one disk write for a whole burst."""
+    def save_copies(self, rows: list[dict], stamps: list[str] | None = None) -> None:
+        """Inserts or updates copies in one transaction: one disk write for a whole burst.
+        stamps: when each row changed (default now), as rows can be saved a little later (see store.py)."""
         placeholders = ", ".join("?" for _ in COPY_COLUMNS)
         updates = ", ".join(f"{c} = excluded.{c}" for c in COPY_COLUMNS if c != "created_at")
-        stamp = now_iso()
+        stamps = stamps or [now_iso()] * len(rows)
         with self._connect() as conn:
             conn.executemany(
                 f"INSERT INTO copies ({', '.join(COPY_COLUMNS)}, updated_at) VALUES ({placeholders}, ?) "
                 f"ON CONFLICT(master_id, master_ticket, client_id) DO UPDATE SET {updates}, updated_at = excluded.updated_at",
-                [(*(row.get(c) for c in COPY_COLUMNS), stamp) for row in rows],
+                [(*(row.get(c) for c in COPY_COLUMNS), stamp) for row, stamp in zip(rows, stamps)],
             )
 
     def live_copies(self, master_id: str) -> list[dict]:
@@ -203,8 +207,8 @@ class Database:
 
     # ---- master orders (the Orders tab) ----
 
-    def master_order_opened(self, master_id: str, position: dict, note: str) -> None:
-        stamp = now_iso()
+    def master_order_opened(self, master_id: str, position: dict, note: str, at: str | None = None) -> None:
+        stamp = at or now_iso()
         event = {"at": stamp, "kind": "open", "text": note}
         with self._connect() as conn:
             conn.execute(
@@ -215,9 +219,11 @@ class Database:
                  "waiting" if position.get("pending") else "open", stamp, json.dumps([event])),
             )
 
-    def master_order_changed(self, master_id: str, ticket: int, kind: str, text: str, **values) -> None:
-        """Adds an event ("modify", "fill", "cancel" or "close") to a master order and stores its new values."""
-        stamp = now_iso()
+    def master_order_changed(self, master_id: str, ticket: int, kind: str, text: str, at: str | None = None,
+                             **values) -> None:
+        """Adds an event ("modify", "fill", "cancel" or "close") to a master order and stores its new values.
+        at: when it happened (default now)."""
+        stamp = at or now_iso()
         with self._connect() as conn:
             row = conn.execute("SELECT events FROM master_orders WHERE master_id = ? AND ticket = ?",
                                (master_id, ticket)).fetchone()

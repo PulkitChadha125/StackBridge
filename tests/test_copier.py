@@ -557,3 +557,52 @@ def test_a_client_that_fails_is_named_in_the_latency_line(copier):
     text = next(e["message"] for e in b.get("/logs?level=warning").json()["logs"]
                 if e["message"].startswith(f"Master trade #{ticket}"))
     assert "not copied (TRADING_OFF)" in text, text
+
+
+# ---- a slow or full disk never holds up an order (store.py) ----
+
+def test_a_slow_disk_does_not_delay_copying(copier, monkeypatch):
+    """Every save takes 2 s (a stalled VPS disk): the copies still open in milliseconds."""
+    from stakbridge.db import Database
+
+    for name in ("save_copies", "set_state", "master_order_opened", "master_order_changed"):
+        original = getattr(Database, name)
+        monkeypatch.setattr(Database, name, lambda self, *a, _o=original, **k: (time.sleep(2), _o(self, *a, **k))[1])
+    b = copier
+    for _ in range(3):  # the 2nd and 3rd trade come while earlier saves are still stuck
+        started = time.perf_counter()
+        master_open(b)
+        wait_until(lambda: len(b.positions("acct_b")) == len(b.positions("acct_a")), interval=0.01)
+        assert time.perf_counter() - started < 1.0
+    wait_until(lambda: len(copies(b)) == 6 and all(r["status"] == "open" for r in copies(b)), timeout=30)
+    assert all(r["openMs"] < 1000 for r in copies(b))  # the latency StakBridge measured and saved
+
+
+def test_a_full_disk_keeps_copying_shows_it_and_saves_everything_once_there_is_space(copier, monkeypatch):
+    import sqlite3
+
+    from stakbridge.db import Database
+
+    full = {"on": True}
+    original = Database.save_copies
+
+    def save_copies(self, *a, **k):
+        if full["on"]:
+            raise sqlite3.OperationalError("database or disk is full")
+        return original(self, *a, **k)
+    monkeypatch.setattr(Database, "save_copies", save_copies)
+    b = copier
+    ticket = master_open(b)
+    wait_until(lambda: len(b.positions("acct_b")) == 1 and len(b.positions("acct_c")) == 1)
+    wait_until(lambda: (b.get("/copier").json()["saveProblem"] or "").startswith("DISK_FULL"))
+    assert copies(b) == []  # nothing could be saved
+
+    master_close(b)  # the close is copied too, from memory
+    wait_until(lambda: b.positions("acct_b") == [] and b.positions("acct_c") == [])
+
+    full["on"] = False
+    wait_until(lambda: b.get("/copier").json()["saveProblem"] is None)
+    wait_until(lambda: len(copies(b)) == 2 and all(r["status"] == "closed" for r in copies(b)))
+    assert {r["masterTicket"] for r in copies(b)} == {ticket}
+    logs = [e["message"] for e in b.get("/logs?level=warning").json()["logs"]]
+    assert any(m.startswith("DISK_FULL") for m in logs) and any("saving works again" in m for m in logs)

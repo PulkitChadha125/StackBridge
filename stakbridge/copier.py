@@ -40,6 +40,9 @@ again starts it fresh with the master's next trades.
 
 Once every client has answered, one log line per master trade lists each client's latency, fastest first. A close or SL/TP change that fails (client
 offline, broker refused) is retried until it succeeds.
+
+The copier never waits for the disk either: it works from memory and hands what must be saved to the Store
+(store.py), which saves it on its own thread. A slow or full disk delays the saving, not the orders.
 """
 
 import logging
@@ -49,6 +52,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from .db import Database, now_iso
+from .store import Store
 from .workers import WorkerGone, WorkerManager
 
 log = logging.getLogger("stakbridge.copier")
@@ -91,6 +95,7 @@ def _key(row: dict) -> tuple:
 class Copier:
     def __init__(self, db: Database, workers: WorkerManager, settings, license_ok=lambda: True):
         self.db = db
+        self.store = Store(db)  # saves on its own thread: nothing on the copier thread waits for the disk
         self.license_ok = license_ok  # False while the licence is not valid: no new trades are copied
         self.workers = workers
         self.timeout = settings.trade_timeout
@@ -116,6 +121,7 @@ class Copier:
         self._reported: set[tuple] = set()  # check findings already logged, so they are not repeated every check
         self._latency_wait: set[tuple] = set()  # (master ticket, phase) whose latency line waits for every answer
         self._latency_logged: set[tuple] = set()  # (master ticket, phase) already logged, so retries do not repeat it
+        self._seen: dict[str, set[int] | None] = {}  # master id -> its tickets open at the last check (None: never watched)
         self._running = False
         workers.on_event = self._on_event
         self.reload()
@@ -150,15 +156,18 @@ class Copier:
 
     def status(self) -> dict:
         positions = self._master_positions
-        return {"watching": positions is not None, "masterPositions": None if positions is None else len(positions)}
+        return {"watching": positions is not None, "masterPositions": None if positions is None else len(positions),
+                "saveProblem": self.store.problem}
 
     def start(self) -> None:
         self._running = True
+        self.store.start()
         threading.Thread(target=self._retry_loop, name="copier-retry", daemon=True).start()
 
     def stop(self) -> None:
         self._running = False
         self._executor.shutdown(wait=True, cancel_futures=True)
+        self.store.stop()
 
     def _submit(self, fn, *args) -> None:
         try:
@@ -181,13 +190,18 @@ class Copier:
             self._diff(message)
         self._flush()
         self._save_order_log()
-        self.db.set_seen_tickets(self.master_id, self._master_positions.keys())
+        self._set_seen(set(self._master_positions))
+
+    def _set_seen(self, tickets: set[int]) -> None:
+        if self._seen.get(self.master_id) != tickets:
+            self._seen[self.master_id] = tickets
+            self.store.call(self.db.set_seen_tickets, self.master_id, sorted(tickets))
 
     def _baseline(self, message: dict) -> None:
         """First report after the master (re)connects."""
         positions = {p["ticket"]: p for p in message["positions"]}
         self._master_positions = positions
-        seen = self.db.get_seen_tickets(self.master_id)
+        seen = self._seen.get(self.master_id)
         if seen is None:
             log.info("copier now watches %s: its %d open positions are not copied", self.master_id, len(positions))
             return
@@ -196,9 +210,9 @@ class Copier:
         # A waiting order is always copied: its price has not been taken yet.
         fresh = [p for p in missed if p.get("pending") or (p.get("ageS") is not None and p["ageS"] <= self.max_age)]
         self._open(fresh, message["at"])
-        for ticket in self.db.open_master_tickets(self.master_id):
-            if ticket not in positions:
-                self._order_log.append(("close", ticket, "Closed on the master while StakBridge was not watching", {}))
+        open_now = set(positions)
+        self.store.call(self.db.open_master_tickets, self.master_id,
+                        then=lambda tickets, m=self.master_id: self._submit(self._closed_while_away, m, open_now, tickets))
         for position in missed:
             if position in fresh and position.get("pending"):
                 self._order_log.append(("open", position, f"{_order_name(position)} placed on the master while "
@@ -216,6 +230,15 @@ class Copier:
                     self._copies.setdefault(position["ticket"], {})[client["accountId"]] = row
                     self._dirty[id(row)] = row
         self._retry()  # closes and SL/TP changes the master made while not watched
+
+    def _closed_while_away(self, master_id: str, open_now: set[int], logged_open: list[int] | None) -> None:
+        """Orders tab: master trades it still shows open that were closed while StakBridge was not watching."""
+        if master_id != self.master_id or not logged_open:
+            return
+        for ticket in logged_open:
+            if ticket not in open_now:
+                self._order_log.append(("close", ticket, "Closed on the master while StakBridge was not watching", {}))
+        self._save_order_log()
 
     def _diff(self, message: dict) -> None:
         at = message["at"]
@@ -574,28 +597,57 @@ class Copier:
             future.add_done_callback(lambda f, c=client_id, m=self.master_id: self._submit(self._checked, c, m, f))
 
     def _checked(self, client_id: str, master_id: str, future: Future) -> None:
-        self._checking.discard(client_id)
         result = _outcome(future)
         if master_id != self.master_id or self._master_positions is None or result.get("status") != "ok":
+            self._checking.discard(client_id)
             return
-        for item in result["positions"]:
-            self._check_copy(client_id, item, pending=False)
-        for item in result.get("orders", []):
-            self._check_copy(client_id, item, pending=True)
+        items = [(item, False) for item in result["positions"]] + [(item, True) for item in result.get("orders", [])]
+        unknown = []
+        for item, pending in items:
+            row = self._copy_in_memory(client_id, item)
+            if row is None:
+                unknown.append((item, pending))
+            else:
+                self._check_copy(client_id, item, pending, row)
+        if unknown:  # copies no longer kept in memory: looked up in the database, on the store's thread
+            self.store.call(self._find_copies, master_id, client_id, unknown,
+                            then=lambda found, c=client_id, m=master_id: self._submit(self._checked_found, c, m, found))
+        else:
+            self._checking.discard(client_id)
         self._flush()
 
-    def _check_copy(self, client_id: str, item: dict, pending: bool) -> None:
-        """One copy found on a client. It is matched to its master trade by the master ticket in its
-        comment, or by its own ticket if the broker changed the comment."""
+    def _find_copies(self, master_id: str, client_id: str, items: list[tuple]) -> list[tuple]:
+        """Runs on the store's thread: the saved copy of each item, by the master ticket in its comment, else by
+        its own ticket."""
+        found = []
+        for item, pending in items:
+            master_ticket = _master_ticket(item.get("comment") or "")
+            row = None
+            if master_ticket is not None:
+                row = self.store.find_copy(master_id, client_id, master_ticket=master_ticket)
+            if row is None:
+                row = self.store.find_copy(master_id, client_id, client_ticket=item["ticket"])
+            found.append((item, pending, row))
+        return found
+
+    def _checked_found(self, client_id: str, master_id: str, found: list[tuple] | None) -> None:
+        self._checking.discard(client_id)
+        if found is None or master_id != self.master_id or self._master_positions is None:
+            return
+        for item, pending, row in found:
+            # Memory first: the copier may have taken this copy up again while it was looked up.
+            self._check_copy(client_id, item, pending, self._copy_in_memory(client_id, item) or row)
+        self._flush()
+
+    def _copy_in_memory(self, client_id: str, item: dict) -> dict | None:
+        """The copy row of a client position or order, by the master ticket in its comment or by its own ticket."""
         master_ticket = _master_ticket(item.get("comment") or "")
-        row = None
-        if master_ticket is not None:
-            row = self._copies.get(master_ticket, {}).get(client_id) or \
-                self.db.find_copy(self.master_id, client_id, master_ticket=master_ticket)
-        if row is None:
-            row = next((r for rows in self._copies.values() for r in rows.values()
-                        if r["client_id"] == client_id and r["client_ticket"] == item["ticket"]), None) or \
-                self.db.find_copy(self.master_id, client_id, client_ticket=item["ticket"])
+        row = self._copies.get(master_ticket, {}).get(client_id) if master_ticket is not None else None
+        return row or next((r for rows in self._copies.values() for r in rows.values()
+                            if r["client_id"] == client_id and r["client_ticket"] == item["ticket"]), None)
+
+    def _check_copy(self, client_id: str, item: dict, pending: bool, row: dict | None) -> None:
+        """One copy found on a client, with its copy row (None if StakBridge has none)."""
         if row is None:  # e.g. a copy of an earlier master: not this master's to close
             self._report_once(("untracked", client_id, item["ticket"]), client_id,
                               "%s holds copy ticket %s (%s) that is not from master %s: left alone",
@@ -750,7 +802,7 @@ class Copier:
         self._flush_queued = False
         rows, self._dirty = list(self._dirty.values()), {}
         if rows:
-            self.db.save_copies(rows)
+            self.store.save_copies(rows)
 
     def _flush_soon(self) -> None:
         """Saves after the answers already waiting are handled: a burst of answers is one write, not one each."""
@@ -760,22 +812,27 @@ class Copier:
 
     def _save_order_log(self) -> None:
         events, self._order_log = self._order_log, []
+        at = now_iso()  # when it happened, not when the disk got to it
         for kind, position_or_ticket, text, values in events:
             if kind == "open":
-                self.db.master_order_opened(self.master_id, position_or_ticket, text)
+                self.store.call(self.db.master_order_opened, self.master_id, position_or_ticket, text, at=at)
             else:
-                self.db.master_order_changed(self.master_id, position_or_ticket, kind, text, **values)
+                self.store.call(self.db.master_order_changed, self.master_id, position_or_ticket, kind, text, at=at,
+                                **values)
 
     def _load_copies(self) -> None:
+        """Reads the master's live copies and seen tickets (at start-up and when the master changes)."""
         if not self.master_id:
             return
+        self.store.wait_idle(10.0)  # read what was saved last, not an older version
+        self._seen[self.master_id] = self.db.get_seen_tickets(self.master_id)
         for row in self.db.live_copies(self.master_id):
             if row["status"] == "pending":  # StakBridge stopped while this order was on its way
                 row.update(status="unknown", reason="RESTARTED_WHILE_SENDING")
-                self.db.save_copy(row)
+                self.store.save_copies([row])
             elif row["status"] == "unknown" and row["reason"] in ("TIMEOUT", "WORKER_STOPPED"):
                 row["reason"] = "RESTARTED_WHILE_SENDING"  # its late answer can no longer arrive
-                self.db.save_copy(row)
+                self.store.save_copies([row])
             self._copies.setdefault(row["master_ticket"], {})[row["client_id"]] = row
         self._release_trading_off()
 
