@@ -50,6 +50,17 @@ What the licence does in StakBridge:
 
 Without a licence server (running from source with `run.bat`, as before) none of this applies and the page keeps its own password. With `STAKBRIDGE_LICENSE_SERVER=http://...` set, `run.bat` signs in with the licence too. An `.exe` without a licence server inside refuses to start.
 
+## Progress, 3 November 2026 (version 1.0.1)
+
+- **Window RAM no longer grows.** The StakBridge window used to grow about 1.5 GB a day. Two causes, both fixed: the page was rebuilt every second (it now changes only what is different), and the window was watching every request the page made (switched off). Measured in the real EXE window: about 40 → 53 MB, then flat. The page also stops refreshing while it is minimised.
+- **Saving no longer slows copies.** Database writes go through their own thread (`stakbridge/store.py`), so a slow disk does not delay trades: on a disk that takes 1.5 s per write, copies took 2.4 s before and 2.5 ms after. If the disk is full or fails, a red bar on the page says so and the save is tried again.
+- **Copy check every second** (`STAKBRIDGE_COPY_CHECK_SECONDS`): closes client copies the master no longer has, picks up lost copies, and sends a close again if it is still stuck after 60 s. A client with Trading OFF keeps its copies (they show as *released*) and the check leaves them alone. When Trading goes back ON, only new master trades are copied.
+- **Master check speed** in the Copier tab (1–100 ms, default 4 ms). A new value takes effect right away, with no new sign-in.
+- **Start-up checks** in the EXE: if .NET 4.7.2+ or the WebView2 Runtime is missing, a message tells you so and StakBridge opens in the web browser instead of failing.
+- **Trades pop-up** shows when each copy was placed, the fastest/median/slowest times and "+N ms vs fastest". The log has one line per master trade with every client's latency.
+- **Log tab:** Download CSV/TXT. The licence panel's Telemetry shows clients per trade, and fetched logs end with a trades summary.
+- Live accounts work the same as demo accounts.
+
 ## Progress, 17 October 2026 (version 1 finished)
 
 - **Symbol names are matched automatically.** If a client's broker has no symbol with the master's name, the client picks its own symbol with the same name minus the broker's ending: master `XAUUSD.C` → client `XAUUSD`, `XAUUSD` → `XAUUSDm`, `#XAUUSD` → `XAUUSD.r`. The account's **Symbol suffix** and the Copier tab's **symbol mapping** still come first. If the broker has several matches (say `XAUUSD` and `XAUUSD.pro`), it prefers the one in Market Watch; if that still leaves more than one, the copy is refused and names them, so you add a mapping. The Trades view shows the name the client really used.
@@ -75,7 +86,7 @@ Without a licence server (running from source with `run.bat`, as before) none of
 ## How copying works
 
 - The account with Role **Master** is watched. **Every other account is a client** and copies the master, at the same lot size unless the Copier tab sets a lot multiplier.
-- Each account has a **Trading** switch. A client with Trading OFF gets no new copies; the other clients still do. The master's Trading switch turns copying of new trades on or off for everyone.
+- Each account has a **Trading** switch. A client with Trading OFF gets no new copies; the other clients still do. Its existing copies are released: StakBridge no longer closes or changes them. The master's Trading switch turns copying of new trades on or off for everyone.
 - **Stop all** blocks new copies on every account. Closes and SL/TP changes still go through, so clients always follow the master out.
 - **Limit and stop orders** are copied while they wait: placed, moved and deleted on the clients together with the master. When the master's order fills, each client gets the trade (its own order if it filled already, otherwise at market). Stop-limit orders are copied once they open a trade.
 - Copies carry magic `990000` and the comment `copy <master ticket>`. Trades you place yourself on a client are never touched.
@@ -114,6 +125,7 @@ All tests run against the simulated broker.
 | `STAKBRIDGE_STATUS_INTERVAL` | `1` | Seconds between connection checks; balance, equity and open P/L are read then |
 | `STAKBRIDGE_DEVIATION_POINTS` | `20` | Max slippage for market orders |
 | `STAKBRIDGE_COPY_POLL_MS` | `4` | How often the master's positions are checked, in milliseconds, until the Copier tab's **Master check speed** is saved |
+| `STAKBRIDGE_COPY_CHECK_SECONDS` | `1` | How often the copy check compares clients with the master |
 | `STAKBRIDGE_COPY_MAX_AGE` | `30` | After a restart, a master position StakBridge missed is copied only if it is at most this many seconds old |
 | `STAKBRIDGE_LICENSE_SERVER` | inside the EXE | Licence server address. Not set and not in the EXE: no licence (local password) |
 | `STAKBRIDGE_DEVICE_DIR` | `%LOCALAPPDATA%\StakBridge` | Licence files, logs and each Admin's data folder |
@@ -132,7 +144,7 @@ All under `/v1`, signed in with the session cookie. Requests that change somethi
 - `GET /copier`, `PUT /copier` with `{"masterId", "clients": [{"accountId", "multiplier", "symbols": {"XAUUSD": "GOLD"}}]}`
 - `GET /orders`, `GET /orders/{ticket}/logs`: master trades and what happened on each client
 - `POST/DELETE /kill`: Stop all / resume
-- `GET /logs?level=info|warning|error`, `DELETE /logs`, `GET /health`
+- `GET /logs?level=info|warning|error`, `GET /logs/download`, `DELETE /logs`, `GET /health`
 - `GET/POST/DELETE /session`, `POST /session/setup`: sign-in (with a licence: `{"username", "password"}`)
 - `GET/PUT /preferences`: how the page looks, `{"zoom": 0.5–2, "theme": "system"|"light"|"dark"}` (kept by StakBridge because the EXE window forgets browser storage)
 - With a licence: `POST /session/password` (change), `POST /session/forgot/request|verify|reset`, `GET /license` (`?refresh=true` asks the server now), `GET /launch?token=` (the EXE window's one-time sign-in link)
@@ -146,7 +158,12 @@ stakbridge/
   desktop.py          the EXE: web server + its own window
   licensing/          sign-in to the licence server, licence checks, client limit, telemetry, log requests
   logfiles.py         daily log files
+  applog.py           StakBridge's own events for the Log tab
+  tradereport.py      trades summary at the end of fetched logs
+  terminals.py        finds the MT5 terminals installed on this PC
+  config.py           settings from environment variables
   db.py               SQLite storage
+  store.py            saving thread, so database writes never slow a copy
   errors.py           API errors, sign-in rate limit
   models.py           request validation
   security.py         password hashing and encryption
