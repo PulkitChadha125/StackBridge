@@ -200,6 +200,18 @@ class Database:
                                "ORDER BY created_at DESC LIMIT 1", (master_id, client_id, value)).fetchone()
         return None if row is None else dict(row)
 
+    def copied_master_tickets(self, master_id: str, tickets: list[int]) -> set[int]:
+        """The master tickets among these that already have copy rows (whatever their status)."""
+        found: set[int] = set()
+        with self._connect() as conn:
+            for start in range(0, len(tickets), 500):
+                chunk = tickets[start:start + 500]
+                marks = ", ".join("?" for _ in chunk)
+                found.update(row[0] for row in conn.execute(
+                    f"SELECT DISTINCT master_ticket FROM copies WHERE master_id = ? AND master_ticket IN ({marks})",
+                    (master_id, *chunk)))
+        return found
+
     def list_copies(self, limit: int = 200) -> list[dict]:
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM copies ORDER BY created_at DESC, client_id LIMIT ?", (limit,)).fetchall()

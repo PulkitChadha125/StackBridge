@@ -70,6 +70,10 @@ class WorkerHandle:
                     self.status, self.reason, self.info = message["status"], message["reason"], message["info"]
                     self._log_status()
                     continue
+                if message.get("event") == "log":
+                    level = logging.INFO if message["level"] == "info" else logging.WARNING
+                    log.log(level, "%s: %s", self.account_id, message["message"], extra={"account": self.account_id})
+                    continue
                 if message.get("event") == "positions":
                     if self._on_event is not None:
                         try:

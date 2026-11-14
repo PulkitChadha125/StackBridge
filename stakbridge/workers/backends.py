@@ -16,6 +16,8 @@ Used by the live account check:
 Used by the copier:
     snapshot(with_age)          -> {ticket: {...}} of all open positions and waiting limit/stop orders
                                    ("pending": True), or None if they could not be read
+    confirm_gone(items)         -> {ticket: bool}: the history has the close of each trade no longer in the snapshot,
+                                   or None if the terminal is not connected and logged in (nothing can be trusted)
     close_position(ticket)      -> {"status": "closed"|"rejected", "reason", "price", "volume", "detail"}
     modify_position(ticket, ..) -> {"status": "modified"|"rejected", "reason"}
     modify_order(ticket, ..)    -> {"status": "modified"|"filled"|"rejected", "reason"}   a waiting order
@@ -402,6 +404,25 @@ class Mt5Backend:
             snapshot[p.ticket] = item
         return snapshot
 
+    def confirm_gone(self, items: list[dict]) -> dict[int, bool] | None:
+        """For trades no longer in the list: {ticket: True} if the terminal's history has the close (a closing
+        deal for a position, the order itself for a deleted waiting order). None when the terminal is not
+        connected and logged into this account: then an empty list means nothing (MetaTrader logging in again)."""
+        mt5 = self.mt5
+        terminal, account = mt5.terminal_info(), mt5.account_info()
+        if terminal is None or account is None or not terminal.connected or account.login != int(self.config["login"]):
+            return None
+        closing = {getattr(mt5, name, value) for name, value in
+                   (("DEAL_ENTRY_OUT", 1), ("DEAL_ENTRY_INOUT", 2), ("DEAL_ENTRY_OUT_BY", 3))}
+        gone = {}
+        for item in items:
+            ticket = item["ticket"]
+            if item.get("pending"):
+                gone[ticket] = bool(mt5.history_orders_get(ticket=ticket))
+            else:
+                gone[ticket] = any(deal.entry in closing for deal in mt5.history_deals_get(position=ticket) or ())
+        return gone
+
     def _find_position(self, ticket: int, magic: int | None = None, comment: str | None = None):
         """The position with this ticket, or the one a waiting order with this ticket turned into, or
         (with magic and comment) a copy opened for it. () if none, None if positions can't be read."""
@@ -618,6 +639,8 @@ class FakeBackend:
         self.simulate_offline = False
         self.positions_by_ticket: dict[int, dict] = {}
         self.orders_by_ticket: dict[int, dict] = {}
+        self.history: set[int] = set()  # tickets of closed positions and deleted orders (MT5's history)
+        self.glitching = False  # test hook: shows no trades at all, as MetaTrader does while it logs in again
         self._tickets = itertools.count(100000 + int(config["login"]) % 1000 * 1000)
 
     def connect(self) -> dict:
@@ -682,10 +705,13 @@ class FakeBackend:
             del self.positions_by_ticket[ticket]
         for ticket in cancelling:
             del self.orders_by_ticket[ticket]
+        self.history.update(closing + cancelling)
         return _close_result(len(closing), len(cancelling), [])
 
     def snapshot(self, with_age: bool = False) -> dict | None:
         snapshot = {}
+        if self.glitching:
+            return snapshot
         for pending, records in ((True, self.orders_by_ticket), (False, self.positions_by_ticket)):
             for ticket, p in records.items():
                 item = {k: p[k] for k in ("ticket", "symbol", "side", "type", "volume", "price", "sl", "tp", "magic")}
@@ -694,6 +720,15 @@ class FakeBackend:
                     item["ageS"] = None if pending else 0.0
                 snapshot[ticket] = item
         return snapshot
+
+    def confirm_gone(self, items: list[dict]) -> dict[int, bool] | None:
+        if self.simulate_offline or not self.connected:
+            return None
+        return {item["ticket"]: item["ticket"] in self.history for item in items}
+
+    def glitch(self, on: bool) -> None:
+        """Test helper: while on, the account looks connected but shows no trades (MetaTrader logging in again)."""
+        self.glitching = on
 
     def fill_pending(self, ticket: int) -> dict:
         """Test helper: the price reached this waiting order, so it becomes a position with the same ticket."""
@@ -718,6 +753,7 @@ class FakeBackend:
 
     def cancel_order(self, ticket: int) -> dict:
         if self.orders_by_ticket.pop(ticket, None) is not None:
+            self.history.add(ticket)
             return {"status": "cancelled", "elapsedMs": 0.0}
         if ticket in self.positions_by_ticket:
             return self._filled(self.positions_by_ticket[ticket])
@@ -729,13 +765,15 @@ class FakeBackend:
              if p["magic"] == order["magic"] and p["comment"] == order["comment"][:MAX_COMMENT]), None)
         if own is not None:
             return self._filled(own, own=True)
-        self.orders_by_ticket.pop(ticket, None)
+        if self.orders_by_ticket.pop(ticket, None) is not None:
+            self.history.add(ticket)
         return _open_keeping_trade(self.open, order)
 
     def close_position(self, ticket: int) -> dict:
         position = self.positions_by_ticket.pop(ticket, None)
         if position is None:
             return {"status": "closed", "detail": {"alreadyClosed": True}}
+        self.history.add(ticket)
         return {"status": "closed", "price": position["price"], "volume": position["volume"], "elapsedMs": 0.0}
 
     def modify_position(self, ticket: int, sl: float, tp: float) -> dict:

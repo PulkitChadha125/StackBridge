@@ -41,6 +41,12 @@ again starts it fresh with the master's next trades.
 Once every client has answered, one log line per master trade lists each client's latency, fastest first. A close or SL/TP change that fails (client
 offline, broker refused) is retried until it succeeds.
 
+A master trade is only ever followed out when it really closed. The master's worker reports a close only once
+MetaTrader's history has it (see workers/process.py). After the master connects again, its first list of trades can
+be empty for a moment while MetaTrader loads the account: copies of trades missing from it are kept open (`_unsure`)
+until the master's history confirms the close, or until the trade shows up again. Trades that were copied before
+are never marked again as "too old to copy" after a reconnect.
+
 The copier never waits for the disk either: it works from memory and hands what must be saved to the Store
 (store.py), which saves it on its own thread. A slow or full disk delays the saving, not the orders.
 """
@@ -69,6 +75,9 @@ OPENING = ("open", "place")
 LOST_ANSWER = ("WORKER_STOPPED", "RESTARTED_WHILE_SENDING")
 # A close with no answer for this long is sent again (MetaTrader stuck). Closing by ticket is safe to repeat.
 STUCK_CLOSE_SECONDS = 60.0
+# A master trade missing after a reconnect, whose close the history does not confirm, is treated as closed after this
+# long while the master's MetaTrader is connected (the same as the worker's CONFIRM_GONE_SECONDS).
+CONFIRM_GONE_SECONDS = 30.0
 RELEASED = "RELEASED_TRADING_OFF"  # reason on copies let go when their client's Trading was switched OFF
 # The latency line of a master trade each command belongs to (see _log_latency).
 LATENCY_PHASES = {"open": "open", "place": "open", "fill": "fill", "close": "close", "cancel": "close"}
@@ -122,6 +131,11 @@ class Copier:
         self._latency_wait: set[tuple] = set()  # (master ticket, phase) whose latency line waits for every answer
         self._latency_logged: set[tuple] = set()  # (master ticket, phase) already logged, so retries do not repeat it
         self._seen: dict[str, set[int] | None] = {}  # master id -> its tickets open at the last check (None: never watched)
+        # Master tickets with live copies that were missing when the master connected again, not yet confirmed
+        # closed by its history -> when first missed. Their copies are not closed meanwhile.
+        self._unsure: dict[int, float] = {}
+        self._asking_gone = False  # a confirm_gone question to the master is on its way
+        self._log_when_gone: set[int] = set()  # Orders tab: "closed while not watching", written once confirmed
         self._running = False
         workers.on_event = self._on_event
         self.reload()
@@ -147,8 +161,10 @@ class Copier:
                 # Copies of the old master stay in the database and are picked up again if it comes back.
                 self._master_positions = None
                 for state in (self._copies, self._inflight, self._retry_at, self._attempts, self._failed_stops,
-                              self._order_log, self._latency_wait, self._latency_logged):
+                              self._order_log, self._latency_wait, self._latency_logged, self._unsure,
+                              self._log_when_gone):
                     state.clear()
+                self._asking_gone = False
                 self._load_copies()
 
         self.reload()
@@ -190,7 +206,7 @@ class Copier:
             self._diff(message)
         self._flush()
         self._save_order_log()
-        self._set_seen(set(self._master_positions))
+        self._set_seen(set(self._master_positions) | set(self._unsure))
 
     def _set_seen(self, tickets: set[int]) -> None:
         if self._seen.get(self.master_id) != tickets:
@@ -201,6 +217,21 @@ class Copier:
         """First report after the master (re)connects."""
         positions = {p["ticket"]: p for p in message["positions"]}
         self._master_positions = positions
+        for ticket in [t for t in self._unsure if t in positions]:
+            del self._unsure[ticket]
+            self._log_when_gone.discard(ticket)  # it never closed
+        # Copies of trades the master does not show now: kept until its history says they closed (see _ask_gone).
+        missing = sorted(t for t, rows in self._copies.items()
+                         if t not in positions and t not in self._unsure and any(r["status"] in LIVE for r in rows.values()))
+        if missing:
+            now = time.monotonic()
+            for ticket in missing:
+                self._unsure[ticket] = now
+            log.warning("master %s connected again without %d trade(s) that have client copies (%s): the copies stay "
+                        "open until MetaTrader's history shows these trades closed", self._name(self.master_id),
+                        len(missing), ", ".join(map(str, missing[:20])) + (" ..." if len(missing) > 20 else ""),
+                        extra={"account": self.master_id})
+            self._ask_gone()
         seen = self._seen.get(self.master_id)
         if seen is None:
             log.info("copier now watches %s: its %d open positions are not copied", self.master_id, len(positions))
@@ -213,30 +244,96 @@ class Copier:
         open_now = set(positions)
         self.store.call(self.db.open_master_tickets, self.master_id,
                         then=lambda tickets, m=self.master_id: self._submit(self._closed_while_away, m, open_now, tickets))
-        for position in missed:
-            if position in fresh and position.get("pending"):
+        for position in fresh:
+            if position.get("pending"):
                 self._order_log.append(("open", position, f"{_order_name(position)} placed on the master while "
                                         "StakBridge was not watching, copied", {}))
-            elif position in fresh:
+            else:
                 self._order_log.append(("open", position, "Opened on the master while StakBridge was not watching "
                                         f"({position['ageS']:.0f} s before), copied", {}))
-            else:
-                self._order_log.append(("open", position, "Opened on the master while StakBridge was not watching, "
-                                        f"too old to copy (over {self.max_age:.0f} s)", {}))
-                log.warning("master position %s opened while not watching, too old to copy", position["ticket"])
-                for client in self._clients():
-                    row = self._new_row(position, client)
-                    row.update(status="skipped", reason="TOO_OLD_AFTER_RESTART")
-                    self._copies.setdefault(position["ticket"], {})[client["accountId"]] = row
-                    self._dirty[id(row)] = row
+        old = [p for p in missed if p not in fresh]
+        if old:  # trades copied before keep their copy rows: only the others are "too old"
+            self.store.call(self.db.copied_master_tickets, self.master_id, [p["ticket"] for p in old],
+                            then=lambda copied, m=self.master_id: self._submit(self._too_old, m, old, copied))
         self._retry()  # closes and SL/TP changes the master made while not watched
+
+    def _too_old(self, master_id: str, positions: list[dict], copied: set[int] | None) -> None:
+        """Master trades found after a reconnect or restart, too old to copy now."""
+        if master_id != self.master_id or copied is None:
+            return
+        for position in positions:
+            ticket = position["ticket"]
+            if ticket in self._copies or (self._master_positions or {}).get(ticket) is None:
+                continue  # taken up meanwhile, or closed meanwhile
+            if ticket in copied:
+                log.warning("master trade %s was copied before: its client copies are left as they are, not copied "
+                            "again", ticket, extra={"account": master_id})
+                continue
+            self._order_log.append(("open", position, "Opened on the master while StakBridge was not watching, "
+                                    f"too old to copy (over {self.max_age:.0f} s)", {}))
+            log.warning("master position %s opened while not watching, too old to copy", ticket,
+                        extra={"account": master_id})
+            for client in self._clients():
+                row = self._new_row(position, client)
+                row.update(status="skipped", reason="TOO_OLD_AFTER_RESTART")
+                self._copies.setdefault(ticket, {})[client["accountId"]] = row
+                self._dirty[id(row)] = row
+        self._flush()
+        self._save_order_log()
+
+    # ---- master trades missing after a reconnect ----
+
+    def _ask_gone(self) -> None:
+        """Asks the master's MetaTrader whether its history has the close of each unsure trade."""
+        handle = self.workers.get(self.master_id) if self._unsure else None
+        if handle is None or self._asking_gone:
+            return
+        items = [{"ticket": t, "pending": any(r["status"] == "placed" for r in self._copies.get(t, {}).values())}
+                 for t in self._unsure]
+        self._asking_gone = True
+        future = handle.send("confirm_gone", items=items)
+        future.add_done_callback(lambda f, m=self.master_id: self._submit(self._gone_answer, m, f))
+
+    def _gone_answer(self, master_id: str, future: Future) -> None:
+        if master_id != self.master_id:
+            return
+        self._asking_gone = False
+        result = _outcome(future)
+        if result.get("status") != "ok":
+            return  # MetaTrader not ready yet: asked again at the next retry
+        now, at = time.monotonic(), time.perf_counter()
+        for ticket, gone in result["gone"].items():
+            first = self._unsure.get(ticket)
+            if first is None:
+                continue  # shown again meanwhile
+            if not gone and now - first < CONFIRM_GONE_SECONDS:
+                continue
+            del self._unsure[ticket]
+            if gone:
+                log.info("master trade %s closed while the master was disconnected (in its history): closing the client "
+                         "copies", ticket, extra={"account": master_id})
+            else:
+                log.warning("master trade %s has been missing for %.0f s with MetaTrader connected and no close in its "
+                            "history: treated as closed, closing the client copies", ticket, CONFIRM_GONE_SECONDS,
+                            extra={"account": master_id})
+            if ticket in self._log_when_gone:
+                self._log_when_gone.discard(ticket)
+                self._order_log.append(("close", ticket, "Closed on the master while StakBridge was not watching", {}))
+            for row in list(self._copies.get(ticket, {}).values()):
+                self._follow_master(row, at, retrying=False)
+        self._flush()
+        self._save_order_log()
+        if self._master_positions is not None:
+            self._set_seen(set(self._master_positions) | set(self._unsure))
 
     def _closed_while_away(self, master_id: str, open_now: set[int], logged_open: list[int] | None) -> None:
         """Orders tab: master trades it still shows open that were closed while StakBridge was not watching."""
         if master_id != self.master_id or not logged_open:
             return
         for ticket in logged_open:
-            if ticket not in open_now:
+            if ticket in self._unsure:
+                self._log_when_gone.add(ticket)  # written once its history confirms the close
+            elif ticket not in open_now:
                 self._order_log.append(("close", ticket, "Closed on the master while StakBridge was not watching", {}))
         self._save_order_log()
 
@@ -247,6 +344,9 @@ class Copier:
             self._master_positions[position["ticket"]] = position
         for position in message["closed"]:
             self._master_positions.pop(position["ticket"], None)
+        for position in message["opened"] + message["modified"] + message["closed"]:
+            self._unsure.pop(position["ticket"], None)  # shown again, or its close confirmed by the master's worker
+            self._log_when_gone.discard(position["ticket"])  # the Orders tab entry is written below, or not needed
         self._open(message["opened"], at)
         for position in message["opened"]:
             text = f"{_order_name(position)} placed on the master at {position['price']}" if position.get("pending") \
@@ -308,6 +408,8 @@ class Copier:
             return
         key = _key(row)
         master = self._master_positions.get(row["master_ticket"])
+        if master is None and row["master_ticket"] in self._unsure:
+            return  # missing after a reconnect, not confirmed closed: nothing is closed yet
         busy = self._inflight.get(key)
         if retrying and time.monotonic() < self._retry_at.get(key, 0):
             return
@@ -568,6 +670,7 @@ class Copier:
                 self._dirty[id(job.row)] = job.row
         if self._master_positions is None:
             return
+        self._ask_gone()
         for rows in list(self._copies.values()):
             for row in list(rows.values()):
                 if row["status"] == "unknown" and row["reason"] in LOST_ANSWER and _key(row) not in self._inflight:
@@ -665,6 +768,8 @@ class Copier:
                 self._copies.setdefault(row["master_ticket"], {})[client_id] = row
                 self._follow_master(row, at, retrying=False)
             return  # the normal close and its retries look after it
+        if master is None and row["master_ticket"] in self._unsure:
+            return  # missing after a reconnect, not confirmed closed yet
         if master is None:
             # The master's trade is gone but this copy is still on the client: close it.
             row["_check_was"] = row["status"] + (f" {row['reason']}" if row["reason"] else "")
